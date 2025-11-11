@@ -1,0 +1,26 @@
+node_modules
+.env
+.env.local
+coverage
+coverage.json
+
+# Hardhat files (in hardhat/)
+hardhat/cache
+hardhat/artifacts
+hardhat/typechain
+hardhat/typechain-types
+hardhat/node_modules
+
+# Next.js files (in frontend/)
+frontend/.next
+frontend/out
+frontend/node_modules
+
+# Database
+frontend/data/*.db
+frontend/data/*.db-journal
+
+# OS files
+.DS_Store
+Thumbs.db
+

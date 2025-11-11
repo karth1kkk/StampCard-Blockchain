@@ -1,0 +1,30 @@
+{
+  "name": "stampcard-hardhat",
+  "version": "1.0.0",
+  "description": "Smart contracts for StampCard Blockchain loyalty system",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:local:save": "hardhat run scripts/deploy-and-save.js --network localhost",
+    "node": "hardhat node"
+  },
+  "keywords": [
+    "blockchain",
+    "loyalty",
+    "erc1155",
+    "stamp-card",
+    "hardhat"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0"
+  }
+}
+

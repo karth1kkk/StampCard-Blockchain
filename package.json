@@ -1,0 +1,28 @@
+{
+  "name": "stampcard-blockchain",
+  "version": "1.0.0",
+  "description": "Blockchain-based loyalty stamp card system for F&B industry",
+  "private": true,
+  "scripts": {
+    "install:hardhat": "cd hardhat && npm install",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": "npm run install:hardhat && npm run install:frontend",
+    "sync:abi": "node scripts/sync-abi.js",
+    "hardhat:compile": "cd hardhat && npm run compile && cd .. && npm run sync:abi",
+    "hardhat:test": "cd hardhat && npm run test",
+    "hardhat:node": "cd hardhat && npm run node",
+    "hardhat:deploy": "cd hardhat && npm run deploy:local",
+    "hardhat:deploy:save": "cd hardhat && npm run deploy:local:save",
+    "frontend:dev": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build",
+    "frontend:start": "cd frontend && npm run start"
+  },
+  "keywords": [
+    "blockchain",
+    "loyalty",
+    "erc1155",
+    "stamp-card"
+  ],
+  "author": "",
+  "license": "MIT"
+}
