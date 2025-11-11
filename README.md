@@ -39,11 +39,24 @@ Our solution leverages blockchain technology to address these challenges:
 
 ### How It Works
 
-1. **Customer Makes a Purchase**: Merchant issues a digital stamp (ERC-1155 token) to the customer's wallet
-2. **Automatic Tracking**: The smart contract tracks stamp count and automatically grants rewards
-3. **Reward Redemption**: When a customer collects 8 stamps, they receive 1 reward token
-4. **Transparent History**: All transactions are recorded on-chain and visible to customers
-5. **Redemption**: Customers can redeem rewards at any participating outlet
+1. **Customer scans a merchant QR**: The QR encodes outlet metadata plus the merchant challenge endpoint.
+2. **Merchant API returns a signed challenge**: The customer app requests `/api/merchant/challenge` which signs `{customer, outletId, nonce, contract, chainId}` with an authorised merchant key.
+3. **Customer wallet submits the transaction**: The customer signs and broadcasts `issueStamp(customer, outletId, merchantSig)` via MetaMask/WalletConnect.
+4. **Smart contract verifies and mints**: `StampCard.sol` checks the merchant signature, increments the on-chain stamp counter, and mints an ERC-1155 stamp (and reward every 8th stamp).
+5. **Rewards stay redeemable**: Customers can call `redeemReward` at any time, burning a reward token for off-chain fulfilment.
+
+```
+┌─────────────┐     scan QR      ┌──────────────┐   GET challenge    ┌─────────────────────┐
+│ Customer    │ ───────────────▶ │ Customer App │ ─────────────────▶ │ Merchant API/Signer │
+│ Wallet      │                  └──────────────┘ ◀───────────────── └─────────────────────┘
+│ (MetaMask)  │    issueStamp tx        │                                ▲
+└─────┬───────┘ ───────────────────────▶│                                │
+      │                                ▼            events              │
+      │                         ┌──────────────────────────┐            │
+      └────────────────────────▶│   StampCard.sol (L1)     │────────────┘
+                                │ (ERC-1155 + rewards)     │
+                                └──────────────────────────┘
+```
 
 ## 🛠 Tech Stack
 
@@ -62,6 +75,17 @@ Our solution leverages blockchain technology to address these challenges:
 ### Blockchain Integration
 - **MetaMask**: Web3 wallet for browser-based blockchain interactions
 - **Ethers.js v6**: Modern Ethereum JavaScript library
+
+## 🔐 Smart Contract Interface
+
+`hardhat/contracts/StampCard.sol` extends OpenZeppelin `ERC1155` and `Ownable`, exposing the following public API:
+
+- `issueStamp(address customer, uint256 outletId, bytes merchantSig)` — callable by the customer only. Verifies the merchant signature, mints one stamp token (`tokenId = outletId`), increments `stampCount`, and emits `StampIssued`.
+- `redeemReward(address customer)` — callable by the customer. Burns one reward token (`tokenId = 0`), decrements `rewardCount`, and emits `RewardRedeemed`.
+- `getStampCount(address customer)` / `getRewardCount(address customer)` — on-chain counters used by the UI.
+- `setRewardThreshold(uint256)` — owner-only control, defaulting to 8, follows README guidance.
+- `authorizeMerchant(address)` / `revokeMerchant(address)` — owner-only allowlist for merchant signer keys used by the challenge endpoint.
+- Events: `StampIssued(customer, outletId, totalStamps)`, `RewardGranted(customer, rewardCount)`, `RewardRedeemed(customer, remainingRewards)`, `MerchantAuthorized`, `MerchantRevoked`, `RewardThresholdUpdated`.
 
 ### Database & Off-Chain Storage
 - **Supabase**: Cloud-based PostgreSQL database for customer names, outlet info, and transaction history
@@ -135,6 +159,10 @@ NEXT_PUBLIC_NETWORK=localhost
 NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8545
 NEXT_PUBLIC_CHAIN_ID=1337
 NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=ETH
+NEXT_PUBLIC_MERCHANT_CHALLENGE_URL=/api/merchant/challenge
+# Server-only values (do not prefix with NEXT_PUBLIC)
+MERCHANT_SIGNER_PRIVATE_KEY=0xabc123...        # Development signer for merchant API
+MERCHANT_REGISTRATION_SECRET=dev-secret-key    # Optional guard for /api/merchant/register
 ```
 Editing `.env.local` requires a restart of the frontend dev server because Next.js only reads environment variables on startup.
 
@@ -155,6 +183,12 @@ Editing `.env.local` requires a restart of the frontend dev server because Next.
 1. Visit [http://localhost:3000](http://localhost:3000).
 2. Click **Connect Wallet** and approve the MetaMask prompt.
 3. Explore the Customer and Merchant dashboards to confirm the contract connection.
+
+### Merchant Signing Endpoint (Local Dev Only)
+
+- The API route `frontend/pages/api/merchant/challenge.js` signs stamp challenges with `MERCHANT_SIGNER_PRIVATE_KEY`.
+- Keep this private key for development only; in production the signature must come from a secure server or HSM that holds the merchant key.
+- The merchant dashboard lets the owner authorise and revoke signer addresses. Ensure the authorised address matches the signer used by the API.
 
 ## Quick Start Checklist
 
@@ -204,13 +238,13 @@ Restart Terminal 3 whenever you edit environment variables, then perform a hard 
 
 ### Customer View
 - Monitor stamp totals, progress toward the next reward, and overall reward balance.
-- Scan merchant QR codes to populate payment details, then authorize the transfer in MetaMask.
+- Scan merchant QR codes to request a merchant-signed challenge, then approve the on-chain mint in MetaMask.
 - Redeem rewards directly; the button disables itself when no rewards remain.
 
 ### Merchant View (Contract Owner)
-- Scan customer QR codes and issue stamps from the `Merchant Dashboard`.
+- Register outlets, publish QR payloads (with address & website), and manage authorised signer keys.
 - Review analytics: total stamps, rewards granted, and unique customer count.
-- Only the contract owner can issue stamps; other accounts see an authorization warning.
+- Only authorised merchant addresses can sign challenges; customers still execute the transaction from their own wallet.
 
 ### Transaction History
 - Displays `StampIssued`, `RewardGranted`, and `RewardRedeemed` events for the connected wallet along with quick explorer links.
@@ -273,6 +307,9 @@ npm run install:frontend
 # Sync contract ABI from Hardhat to Frontend
 npm run sync:abi
 
+# Sync deployment metadata into frontend/.env.local
+npm run sync:deployment
+
 # Compile contracts and sync ABI
 npm run hardhat:compile
 
@@ -284,6 +321,9 @@ npm run hardhat:node
 
 # Deploy contract to local network and update frontend env file
 npm run hardhat:deploy:save
+
+# Run contract tests + frontend lint
+npm run test:all
 
 # Start Next.js development server
 npm run frontend:dev
