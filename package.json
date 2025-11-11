@@ -15,7 +15,9 @@
     "hardhat:deploy:save": "cd hardhat && npm run deploy:local:save",
     "frontend:dev": "cd frontend && npm run dev",
     "frontend:build": "cd frontend && npm run build",
-    "frontend:start": "cd frontend && npm run start"
+    "frontend:start": "cd frontend && npm run start",
+    "sync:deployment": "node scripts/syncDeployment.js",
+    "test:all": "npm run hardhat:test && cd frontend && npm run lint"
   },
   "keywords": [
     "blockchain",
