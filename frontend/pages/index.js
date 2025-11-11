@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import Head from 'next/head';
+import Link from 'next/link';
 import WalletConnect from '../components/WalletConnect';
 import CustomerDashboard from '../components/CustomerDashboard';
 import MerchantDashboard from '../components/MerchantDashboard';
@@ -70,7 +71,15 @@ export default function Home() {
               <h1 className="text-lg font-semibold text-white sm:text-xl">Blockchain Loyalty Network</h1>
             </div>
           </div>
-          <WalletConnect />
+          <div className="flex items-center gap-3">
+            <Link
+              href="/merchant/login"
+              className="hidden rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-emerald-300/60 hover:text-emerald-200 sm:inline-flex"
+            >
+              Merchant Login
+            </Link>
+            <WalletConnect />
+          </div>
         </div>
       </header>
 
