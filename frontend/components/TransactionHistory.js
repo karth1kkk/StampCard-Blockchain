@@ -1,21 +1,32 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '../context/WalletContext';
 import { getTransactionHistory } from '../lib/web3';
+
+const NETWORK = process.env.NEXT_PUBLIC_NETWORK || 'localhost';
+
+const getExplorerBase = () => {
+  if (NETWORK === 'polygon-amoy') {
+    return 'https://amoy.polygonscan.com/tx/';
+  }
+  if (NETWORK === 'mainnet' || NETWORK === 'ethereum') {
+    return 'https://etherscan.io/tx/';
+  }
+  if (NETWORK === 'sepolia') {
+    return 'https://sepolia.etherscan.io/tx/';
+  }
+  return null;
+};
+
+const EXPLORER_BASE = getExplorerBase();
 
 export default function TransactionHistory() {
   const { account, provider } = useWallet();
   const [transactions, setTransactions] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  useEffect(() => {
-    if (account && provider) {
-      loadHistory();
-    }
-  }, [account, provider]);
-
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     if (!account || !provider) return;
-    
+
     setIsLoading(true);
     try {
       const history = await getTransactionHistory(account, provider);
@@ -25,7 +36,13 @@ export default function TransactionHistory() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [account, provider]);
+
+  useEffect(() => {
+    if (account && provider) {
+      loadHistory();
+    }
+  }, [account, provider, loadHistory]);
 
   const getTransactionTypeLabel = (type) => {
     switch (type) {
@@ -111,7 +128,11 @@ export default function TransactionHistory() {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-200">
-                      {tx.type === 'stamp_issued' && `Stamps: ${tx.stampCount}`}
+                      {tx.type === 'stamp_issued' && (
+                        <>
+                          Outlet #{tx.outletId} · Total Stamps: {tx.stampCount}
+                        </>
+                      )}
                       {tx.type === 'reward_granted' && `Rewards: ${tx.rewardCount}`}
                       {tx.type === 'reward_redeemed' && `Remaining: ${tx.remainingRewards}`}
                     </td>
@@ -119,14 +140,18 @@ export default function TransactionHistory() {
                       {tx.blockNumber}
                     </td>
                     <td className="px-6 py-4 text-sm font-mono text-blue-300">
-                      <a
-                        href={`https://etherscan.io/tx/${tx.transactionHash}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-blue-300 underline decoration-dotted underline-offset-4 transition hover:text-blue-100"
-                      >
-                        {tx.transactionHash.slice(0, 10)}...
-                      </a>
+                      {EXPLORER_BASE ? (
+                        <a
+                          href={`${EXPLORER_BASE}${tx.transactionHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-blue-300 underline decoration-dotted underline-offset-4 transition hover:text-blue-100"
+                        >
+                          {tx.transactionHash.slice(0, 10)}...
+                        </a>
+                      ) : (
+                        <span>{tx.transactionHash.slice(0, 10)}...</span>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -106,6 +106,44 @@ export const redeemReward = async (customerAddress, signer) => {
   return { hash: tx.hash, receipt };
 };
 
+export const authorizeMerchant = async (merchantAddress, signer) => {
+  if (!signer) {
+    throw new Error('Wallet signer is not available.');
+  }
+  if (!ethers.isAddress(merchantAddress)) {
+    throw new Error('Merchant address must be a valid Ethereum address.');
+  }
+  const contract = getContract(signer);
+  const tx = await contract.authorizeMerchant(merchantAddress);
+  const receipt = await tx.wait();
+  return { hash: tx.hash, receipt };
+};
+
+export const revokeMerchant = async (merchantAddress, signer) => {
+  if (!signer) {
+    throw new Error('Wallet signer is not available.');
+  }
+  if (!ethers.isAddress(merchantAddress)) {
+    throw new Error('Merchant address must be a valid Ethereum address.');
+  }
+  const contract = getContract(signer);
+  const tx = await contract.revokeMerchant(merchantAddress);
+  const receipt = await tx.wait();
+  return { hash: tx.hash, receipt };
+};
+
+export const isMerchantAuthorizedOnChain = async (merchantAddress, provider) => {
+  if (!merchantAddress || !provider) return false;
+  try {
+    const contract = getContractReadOnly(provider);
+    const authorized = await contract.isMerchantAuthorized(merchantAddress);
+    return Boolean(authorized);
+  } catch (error) {
+    console.error('Error checking merchant authorization:', error);
+    return false;
+  }
+};
+
 export const getTransactionHistory = async (address, provider, fromBlock = 0) => {
   const contract = getContractReadOnly(provider);
   const history = [];
@@ -127,7 +165,7 @@ export const getTransactionHistory = async (address, provider, fromBlock = 0) =>
         blockNumber: event.blockNumber,
         transactionHash: event.transactionHash,
         outletId: Number(event.args.outletId),
-        totalStamps: Number(event.args.totalStamps),
+        stampCount: Number(event.args.totalStamps),
         timestamp: event.blockTimestamp ? new Date(Number(event.blockTimestamp) * 1000) : new Date(),
       });
     });

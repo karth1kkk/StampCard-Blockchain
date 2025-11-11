@@ -72,14 +72,6 @@ export default function CustomerDashboard() {
     }
   };
 
-  if (!account) {
-    return (
-      <div className="py-12 text-center text-slate-300">
-        Connect your wallet to view your digital stamp card.
-      </div>
-    );
-  }
-
   const cycleStamps = rewardThreshold ? stampCount % rewardThreshold : 0;
   const stampsNeeded =
     rewardThreshold && cycleStamps === 0 ? rewardThreshold : rewardThreshold - cycleStamps;
@@ -93,6 +85,14 @@ export default function CustomerDashboard() {
       })),
     [rewardThreshold, cycleStamps]
   );
+
+  if (!account) {
+    return (
+      <div className="py-12 text-center text-slate-300">
+        Connect your wallet to view your digital stamp card.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
