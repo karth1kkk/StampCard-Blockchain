@@ -1,7 +1,10 @@
 // wagmi configuration for StampCard dapp
-import { createConfig, http } from 'wagmi';
-import { metaMask, walletConnect } from 'wagmi/connectors';
-import { defineChain } from 'viem';
+'use client';
+
+import { createConfig } from 'wagmi';
+import { MetaMaskConnector } from 'wagmi/connectors/metaMask';
+import { WalletConnectConnector } from 'wagmi/connectors/walletConnect';
+import { createPublicClient, defineChain, http } from 'viem';
 
 const chainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID || 1337);
 const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'http://127.0.0.1:8545';
@@ -24,11 +27,12 @@ export const stampCardChain = defineChain({
 });
 
 const connectors = [
-  metaMask({
-    dappMetadata: {
-      name: 'StampCard Loyalty',
+  new MetaMaskConnector({
+    chains: [stampCardChain],
+    options: {
+      dappMetadata: { name: 'StampCard Loyalty' },
+      shimDisconnect: true,
     },
-    shimDisconnect: true,
   }),
 ];
 
@@ -36,26 +40,31 @@ const walletConnectProjectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
 
 if (walletConnectProjectId) {
   connectors.push(
-    walletConnect({
-      projectId: walletConnectProjectId,
-      showQrModal: true,
-      metadata: {
-        name: 'StampCard Loyalty',
-        description: 'Customer QR scanning for on-chain stamps',
-        url: 'https://stampcard.local',
-        icons: ['https://stampcard.local/icon.png'],
-      },
+    new WalletConnectConnector({
       chains: [stampCardChain],
+      options: {
+        projectId: walletConnectProjectId,
+        showQrModal: true,
+        metadata: {
+          name: 'StampCard Loyalty',
+          description: 'Customer QR scanning for on-chain stamps',
+          url: 'https://stampcard.local',
+          icons: ['https://stampcard.local/icon.png'],
+        },
+      },
     })
   );
 }
 
+const publicClient = createPublicClient({
+  chain: stampCardChain,
+  transport: http(rpcUrl),
+});
+
 export const wagmiConfig = createConfig({
   chains: [stampCardChain],
   connectors,
-  transports: {
-    [stampCardChain.id]: http(rpcUrl),
-  },
+  publicClient,
   ssr: true,
 });
 
