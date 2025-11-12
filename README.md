@@ -136,7 +136,7 @@ npm run install:frontend
 ```bash
 npm run hardhat:node
 ```
-This boots a local JSON-RPC endpoint at `http://127.0.0.1:8545` (chain id `1337`).
+This boots a local JSON-RPC endpoint at `http://127.0.0.1:8545` (chain id `31337`) and binds to `0.0.0.0` so devices on the same network can reach it (use `http://<your-lan-ip>:8545`).
 
 **Terminal 2 – Compile and deploy**
 ```bash
@@ -157,8 +157,9 @@ If you use `npm run hardhat:deploy:save`, the file `frontend/.env.local` is gene
 NEXT_PUBLIC_CONTRACT_ADDRESS=0x...
 NEXT_PUBLIC_NETWORK=localhost
 NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8545
-NEXT_PUBLIC_CHAIN_ID=1337
+NEXT_PUBLIC_CHAIN_ID=31337
 NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=ETH
+NEXT_PUBLIC_RPC_HOST=127.0.0.1
 NEXT_PUBLIC_MERCHANT_CHALLENGE_URL=/api/merchant/challenge
 # Server-only values (do not prefix with NEXT_PUBLIC)
 MERCHANT_SIGNER_PRIVATE_KEY=0xabc123...        # Development signer for merchant API
@@ -173,7 +174,7 @@ Editing `.env.local` requires a restart of the frontend dev server because Next.
    ```
    Network Name: Hardhat Local
    RPC URL:      http://127.0.0.1:8545
-   Chain ID:     1337
+   Chain ID:     31337
    Currency:     ETH
    ```
 3. Import one of the private keys printed by `npm run hardhat:node` so the wallet has test ETH/MATIC.
@@ -200,7 +201,7 @@ Editing `.env.local` requires a restart of the frontend dev server because Next.
 
 | Terminal | Command                         | Keep Running? | Notes                                |
 |----------|---------------------------------|---------------|--------------------------------------|
-| 1        | `npm run hardhat:node`          | ✅            | Local blockchain (chain id 1337)     |
+| 1        | `npm run hardhat:node`          | ✅            | Local blockchain (chain id 31337)     |
 | 2        | `npm run hardhat:deploy:save`   | ❌            | Deploys & auto-writes `.env.local`   |
 | 3        | `npm run frontend:dev`          | ✅            | Next.js dev server (`http://localhost:3000`) |
 

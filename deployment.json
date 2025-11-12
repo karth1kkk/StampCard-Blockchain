@@ -1,8 +1,10 @@
 {
-  "address": "0x99E1F4803c78Cd4edDCcB0EcF018c78299879cB3",
+  "address": "0x35d7978755d5727f6DC690705795211ec099CB2D",
   "network": "localhost",
-  "chainId": 1337,
-  "deployer": "0xB9E521b0b8015142F25EBAE447219554Ac2efAed",
+  "chainId": 31337,
+  "rpcUrl": "http://10.101.115.142:8545",
+  "nativeSymbol": "ETH",
+  "deployer": "0x25F1FDc174B81A12C2140df2BB9303b1e3bE3d8b",
   "rewardThreshold": 8,
-  "timestamp": "2025-11-11T13:57:50.985Z"
+  "timestamp": "2025-11-12T08:07:43.825Z"
 }

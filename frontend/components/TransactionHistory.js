@@ -20,29 +20,31 @@ const getExplorerBase = () => {
 const EXPLORER_BASE = getExplorerBase();
 
 export default function TransactionHistory() {
-  const { account, provider } = useWallet();
+  const { customerAddress, merchantAddress, provider } = useWallet();
   const [transactions, setTransactions] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  const targetAddress = customerAddress || merchantAddress;
+
   const loadHistory = useCallback(async () => {
-    if (!account || !provider) return;
+    if (!targetAddress || !provider) return;
 
     setIsLoading(true);
     try {
-      const history = await getTransactionHistory(account, provider);
+      const history = await getTransactionHistory(targetAddress, provider);
       setTransactions(history);
     } catch (error) {
       console.error('Error loading transaction history:', error);
     } finally {
       setIsLoading(false);
     }
-  }, [account, provider]);
+  }, [targetAddress, provider]);
 
   useEffect(() => {
-    if (account && provider) {
+    if (targetAddress && provider) {
       loadHistory();
     }
-  }, [account, provider, loadHistory]);
+  }, [targetAddress, provider, loadHistory]);
 
   const getTransactionTypeLabel = (type) => {
     switch (type) {
@@ -70,7 +72,7 @@ export default function TransactionHistory() {
     }
   };
 
-  if (!account) {
+  if (!targetAddress) {
     return (
       <div className="py-12 text-center text-slate-300">
         Please connect your wallet to view transaction history.

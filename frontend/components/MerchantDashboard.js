@@ -10,6 +10,7 @@ import {
   getContractReadOnly,
 } from '../lib/web3';
 import { STAMPS_PER_REWARD } from '../lib/constants';
+import ConnectViaQR from './ConnectViaQR';
 
 const DEFAULT_CHALLENGE_URL =
   process.env.NEXT_PUBLIC_MERCHANT_CHALLENGE_URL || '/api/merchant/challenge';
@@ -18,13 +19,13 @@ const isValidAddress = (value) => !!value && ethers.isAddress(value);
 
 export default function MerchantDashboard() {
   const {
-    account,
+    merchantAddress,
     provider,
-    signer,
+    merchantSigner,
     isOwner,
     isMerchant,
     isCorrectNetwork,
-    switchToExpectedNetwork,
+    ensureCorrectNetwork,
   } = useWallet();
 
   const [analytics, setAnalytics] = useState({
@@ -80,7 +81,7 @@ export default function MerchantDashboard() {
   }, [provider]);
 
   const loadOutlets = useCallback(async () => {
-    if (!account) return;
+    if (!merchantAddress) return;
 
     setOutletsLoading(true);
     try {
@@ -93,7 +94,7 @@ export default function MerchantDashboard() {
       if (isOwner) {
         setOutlets(list);
       } else {
-        const lowerAccount = account.toLowerCase();
+        const lowerAccount = merchantAddress.toLowerCase();
         const filtered = list.filter((outlet) => {
           const merchantAddress =
             (outlet.merchant_address || outlet.merchantAddress || '').toLowerCase();
@@ -108,14 +109,14 @@ export default function MerchantDashboard() {
     } finally {
       setOutletsLoading(false);
     }
-  }, [account, isOwner]);
+  }, [merchantAddress, isOwner]);
 
   useEffect(() => {
-    if (account && provider && (isOwner || isMerchant)) {
+    if (merchantAddress && provider && (isOwner || isMerchant)) {
       loadAnalytics();
       loadOutlets();
     }
-  }, [account, provider, isOwner, isMerchant, loadAnalytics, loadOutlets]);
+  }, [merchantAddress, provider, isOwner, isMerchant, loadAnalytics, loadOutlets]);
 
   useEffect(() => {
     if (!ethers.isAddress(authAddress) || !provider) {
@@ -177,12 +178,12 @@ export default function MerchantDashboard() {
 
   const ensureNetwork = useCallback(async () => {
     if (!isCorrectNetwork) {
-      await switchToExpectedNetwork();
+      await ensureCorrectNetwork();
     }
-  }, [isCorrectNetwork, switchToExpectedNetwork]);
+  }, [isCorrectNetwork, ensureCorrectNetwork]);
 
   const handleAuthorize = async () => {
-    if (!signer) {
+    if (!merchantSigner) {
       toast.error('Connect your wallet before authorising a merchant.');
       return;
     }
@@ -198,7 +199,7 @@ export default function MerchantDashboard() {
     setIsAuthorising(true);
     try {
       await ensureNetwork();
-      const { hash } = await authorizeMerchant(authAddress, signer);
+      const { hash } = await authorizeMerchant(authAddress, merchantSigner);
       toast.success(`Merchant authorised. Tx: ${hash.slice(0, 10)}…`);
       if (provider) {
         const status = await isMerchantAuthorizedOnChain(authAddress, provider);
@@ -213,7 +214,7 @@ export default function MerchantDashboard() {
   };
 
   const handleRevoke = async () => {
-    if (!signer) {
+    if (!merchantSigner) {
       toast.error('Connect your wallet before revoking a merchant.');
       return;
     }
@@ -229,7 +230,7 @@ export default function MerchantDashboard() {
     setIsRevoking(true);
     try {
       await ensureNetwork();
-      const { hash } = await revokeMerchant(authAddress, signer);
+      const { hash } = await revokeMerchant(authAddress, merchantSigner);
       toast.success(`Merchant revoked. Tx: ${hash.slice(0, 10)}…`);
       if (provider) {
         const status = await isMerchantAuthorizedOnChain(authAddress, provider);
@@ -265,7 +266,7 @@ export default function MerchantDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newOutlet.name,
-          ownerAddress: account,
+          ownerAddress: merchantAddress,
           merchantAddress: newOutlet.merchantAddress,
           location: newOutlet.location,
           website: newOutlet.website,
@@ -482,7 +483,8 @@ export default function MerchantDashboard() {
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-2xl shadow-indigo-900/40 backdrop-blur-2xl">
           <h3 className="text-lg font-semibold text-white">Authorised Merchant Session</h3>
           <p className="mt-2 text-sm text-slate-300">
-            Connected wallet <span className="font-mono text-xs text-slate-100">{account}</span> is
+            Connected wallet{' '}
+            <span className="font-mono text-xs text-slate-100">{merchantAddress}</span> is
             authorised to issue QR codes and view analytics. Ask the contract owner if you need new
             outlets or signer changes.
           </p>
@@ -616,6 +618,8 @@ export default function MerchantDashboard() {
           </div>
         )}
       </div>
+
+      <ConnectViaQR />
     </div>
   );
 }

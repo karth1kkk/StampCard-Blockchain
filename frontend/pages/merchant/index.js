@@ -5,10 +5,10 @@ import WalletConnect from '../../components/WalletConnect';
 import { useWallet } from '../../context/WalletContext';
 
 export default function MerchantHomePage() {
-  const { account, isOwner, isOwnerLoading, isCorrectNetwork } = useWallet();
+  const { merchantAddress, isOwner, isOwnerLoading, isCorrectNetwork } = useWallet();
 
-  const showDashboard = account && isOwner && isCorrectNetwork;
-  const showLoading = account && isOwnerLoading;
+  const showDashboard = merchantAddress && isOwner && isCorrectNetwork;
+  const showLoading = merchantAddress && isOwnerLoading;
 
   return (
     <>
@@ -30,7 +30,7 @@ export default function MerchantHomePage() {
             <WalletConnect />
           </header>
 
-          {!account ? (
+          {!merchantAddress ? (
             <GuardCard
               title="Connect Owner Wallet"
               message="A wallet connection is required to verify ownership. Only the contract owner can access merchant tooling."

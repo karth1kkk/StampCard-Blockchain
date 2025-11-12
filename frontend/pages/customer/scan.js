@@ -64,7 +64,7 @@ const BusinessInfo = ({ businessName, location, website }) => (
 );
 
 export default function CustomerScanPage() {
-  const { account, signer, isCorrectNetwork, switchToExpectedNetwork } = useWallet();
+  const { customerAddress, customerSigner, isCorrectNetwork, ensureCorrectNetwork } = useWallet();
   const [scannerActive, setScannerActive] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [challenge, setChallenge] = useState(null);
@@ -109,13 +109,13 @@ export default function CustomerScanPage() {
   };
 
   const requestStamp = async () => {
-    if (!account || !signer) {
+    if (!customerAddress || !customerSigner) {
       toast.error('Connect your wallet before requesting a stamp.');
       return;
     }
     if (!isCorrectNetwork) {
       try {
-        await switchToExpectedNetwork();
+        await ensureCorrectNetwork();
       } catch (error) {
         toast.error(error?.shortMessage || error?.message || 'Network switch rejected.');
         return;
@@ -129,7 +129,7 @@ export default function CustomerScanPage() {
     setIsRequesting(true);
     try {
       const url = new URL(challenge.challengeUrl, window.location.origin);
-      url.searchParams.set('customer', account);
+      url.searchParams.set('customer', customerAddress);
       url.searchParams.set('outletId', challenge.outletId.toString());
       url.searchParams.set('merchant', challenge.merchantAddress);
 
@@ -149,11 +149,11 @@ export default function CustomerScanPage() {
 
       const { hash } = await issueStamp(
         {
-          customerAddress: account,
+          customerAddress,
           outletId: challenge.outletId,
           signaturePayload: signature,
         },
-        signer
+        customerSigner
       );
 
       toast.success(`Stamp requested. Tx: ${hash.slice(0, 10)}…`);
@@ -181,7 +181,7 @@ export default function CustomerScanPage() {
           </p>
         </div>
 
-        {!account ? (
+        {!customerAddress ? (
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 text-center text-slate-300">
             Connect your wallet to start scanning.
           </div>

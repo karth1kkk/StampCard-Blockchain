@@ -8,7 +8,7 @@
     "test": "hardhat test",
     "deploy:local": "hardhat run scripts/deploy.js --network localhost",
     "deploy:local:save": "hardhat run scripts/deploy-and-save.js --network localhost",
-    "node": "hardhat node --hostname 0.0.0.0"
+    "node": "npx hardhat node --hostname 0.0.0.0"
   },
   "keywords": [
     "blockchain",

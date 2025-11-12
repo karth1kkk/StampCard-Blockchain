@@ -2,18 +2,19 @@ import Head from 'next/head';
 import Link from 'next/link';
 import WalletConnect from '../../components/WalletConnect';
 import { useWallet } from '../../context/WalletContext';
-import { stampCardChain } from '../../lib/wagmiConfig';
 
+const NETWORK_NAME = process.env.NEXT_PUBLIC_NETWORK || 'Hardhat Localhost';
+const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || 'http://127.0.0.1:8545';
 const HARDHAT_STEPS = [
   'Run `npm run hardhat:node` in a dedicated terminal.',
   'Copy the first private key printed in the Hardhat node output.',
   'In MetaMask → Account menu → “Import account”, paste the private key.',
-  `Ensure MetaMask is on the ${stampCardChain.name} network (${stampCardChain.rpcUrls.default.http[0]}).`,
+  `Ensure MetaMask is on the ${NETWORK_NAME} network (${RPC_URL}).`,
 ];
 
 export default function MerchantLoginPage() {
-  const { account, isOwner, isCorrectNetwork } = useWallet();
-  const readyForDashboard = account && isOwner && isCorrectNetwork;
+  const { merchantAddress, isOwner, isCorrectNetwork, expectedChainId } = useWallet();
+  const readyForDashboard = merchantAddress && isOwner && isCorrectNetwork;
 
   return (
     <>
@@ -63,9 +64,9 @@ export default function MerchantLoginPage() {
                 <div className="mt-4 space-y-3 text-sm">
                   <StatusRow
                     label="Wallet Connected"
-                    state={account ? 'Ready' : 'Pending'}
-                    tone={account ? 'success' : 'warning'}
-                    helper={account || 'Connect your wallet via the button above.'}
+                    state={merchantAddress ? 'Ready' : 'Pending'}
+                    tone={merchantAddress ? 'success' : 'warning'}
+                    helper={merchantAddress || 'Connect your wallet via the button above.'}
                   />
                   <StatusRow
                     label="Correct Network"
@@ -73,16 +74,16 @@ export default function MerchantLoginPage() {
                     tone={isCorrectNetwork ? 'success' : 'warning'}
                     helper={
                       isCorrectNetwork
-                        ? `Connected to ${stampCardChain.name}.`
-                        : 'Switch to the Hardhat Local network.'
+                        ? `Connected to ${NETWORK_NAME}.`
+                        : `Switch to the Hardhat Local network (chainId ${expectedChainId}).`
                     }
                   />
                   <StatusRow
                     label="Owner Verification"
-                    state={account ? (isOwner ? 'Ready' : 'Blocked') : 'Pending'}
-                    tone={!account ? 'warning' : isOwner ? 'success' : 'error'}
+                    state={merchantAddress ? (isOwner ? 'Ready' : 'Blocked') : 'Pending'}
+                    tone={!merchantAddress ? 'warning' : isOwner ? 'success' : 'error'}
                     helper={
-                      !account
+                      !merchantAddress
                         ? 'Connect the deployer wallet to continue.'
                         : isOwner
                         ? 'Wallet matches the contract owner.'

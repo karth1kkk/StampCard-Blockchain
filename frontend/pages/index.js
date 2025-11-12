@@ -83,8 +83,9 @@ const insightArticles = [
 ];
 
 export default function Home() {
-  const { account, isOwner, isMerchant } = useWallet();
+  const { customerAddress, merchantAddress, isOwner, isMerchant } = useWallet();
   const [activeTab, setActiveTab] = useState('customer');
+  const hasAnyWallet = Boolean(customerAddress || merchantAddress);
 
   const tabs = useMemo(() => {
     const base = [
@@ -140,7 +141,7 @@ export default function Home() {
       </header>
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-12 px-4 py-10 sm:px-6 lg:px-8">
-        {!account ? (
+        {!hasAnyWallet ? (
           <>
             <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] p-8 shadow-2xl backdrop-blur-xl sm:p-16">
               <div className="absolute inset-y-0 right-0 hidden w-1/2 bg-gradient-to-br from-blue-500/10 via-indigo-500/10 to-purple-600/10 blur-[120px] sm:block" />

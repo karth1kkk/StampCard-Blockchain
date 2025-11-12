@@ -1,129 +1,158 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'react-toastify';
 import { useWallet } from '../context/WalletContext';
-import { stampCardChain } from '../lib/wagmiConfig';
 
-const shortenAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
+const shortenAddress = (address) =>
+  address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '';
+const formatBalance = (balance) => {
+  const parsed = Number.parseFloat(balance ?? '0');
+  if (Number.isNaN(parsed)) {
+    return '0.0000';
+  }
+  return parsed.toFixed(4);
+};
 
 export default function WalletConnect() {
   const {
-    account,
-    connectors,
-    connect,
-    disconnect,
+    customerAddress,
+    merchantAddress,
+    customerBalance,
+    merchantBalance,
+    connectCustomerWallet,
+    connectMerchantWallet,
+    disconnectCustomerWallet,
+    disconnectMerchantWallet,
     isConnecting,
-    isDisconnecting,
     isCorrectNetwork,
+    networkChainId,
+    expectedChainId,
     switchToExpectedNetwork,
   } = useWallet();
-  const [selectedConnectorId, setSelectedConnectorId] = useState(null);
-  const [isWorking, setIsWorking] = useState(false);
 
-  useEffect(() => {
-    if (connectors?.length && !selectedConnectorId) {
-      setSelectedConnectorId(connectors[0].id);
-    }
-  }, [connectors, selectedConnectorId]);
+  const [customerBusy, setCustomerBusy] = useState(false);
+  const [merchantBusy, setMerchantBusy] = useState(false);
 
-  const handleConnect = async () => {
-    if (!selectedConnectorId) {
-      toast.error('No wallet connectors available.');
-      return;
-    }
-
-    setIsWorking(true);
+  const handleCustomerConnect = async () => {
+    if (customerBusy) return;
+    setCustomerBusy(true);
     try {
-      await connect(selectedConnectorId);
-      toast.success('Wallet connected successfully');
+      await connectCustomerWallet();
+      toast.success('Customer wallet connected');
     } catch (error) {
-      console.error('Wallet connection failed:', error);
-      toast.error(error?.shortMessage || error?.message || 'Failed to connect wallet');
+      console.error('Customer wallet connection failed:', error);
+      toast.error(error?.message || 'Failed to connect customer wallet');
     } finally {
-      setIsWorking(false);
+      setCustomerBusy(false);
     }
   };
 
-  const handleDisconnect = async () => {
-    setIsWorking(true);
+  const handleMerchantConnect = async () => {
+    if (merchantBusy) return;
+    setMerchantBusy(true);
     try {
-      await disconnect();
-      toast.info('Wallet disconnected');
+      await connectMerchantWallet();
+      toast.success('Merchant wallet connected');
     } catch (error) {
-      console.error('Failed to disconnect wallet:', error);
-      toast.error(error?.message || 'Could not disconnect wallet');
+      console.error('Merchant wallet connection failed:', error);
+      toast.error(error?.message || 'Failed to connect merchant wallet');
     } finally {
-      setIsWorking(false);
+      setMerchantBusy(false);
     }
   };
 
-  const handleSwitchNetwork = async () => {
-    try {
-      await switchToExpectedNetwork();
-      toast.success(`Switched to ${stampCardChain.name}`);
-    } catch (error) {
-      console.error('Failed to switch network:', error);
-      toast.error(error?.shortMessage || error?.message || 'Network switch rejected');
-    }
+  const handleCustomerDisconnect = () => {
+    disconnectCustomerWallet();
+    toast.info('Customer wallet disconnected');
   };
 
-  if (account) {
-    return (
-      <div className="flex flex-col items-end gap-2">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-xs font-medium text-emerald-200 backdrop-blur">
-            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)]" />
-            <span className="uppercase tracking-[0.28em] text-emerald-300">Active</span>
-          </div>
-          <div className="rounded-full bg-white/5 px-4 py-2 font-mono text-sm text-white/80 ring-1 ring-white/10">
-            {shortenAddress(account)}
-          </div>
-          <button
-            onClick={handleDisconnect}
-            disabled={isDisconnecting || isWorking}
-            className="rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-white/80 transition hover:border-red-400/60 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isDisconnecting || isWorking ? 'Disconnecting...' : 'Disconnect'}
-          </button>
-        </div>
-        {!isCorrectNetwork ? (
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
-            <span>
-              Wrong network. Switch to <span className="font-semibold">{stampCardChain.name}</span>
-            </span>
-            <button
-              onClick={handleSwitchNetwork}
-              className="rounded-full border border-amber-200/40 px-3 py-1 font-semibold uppercase tracking-widest text-amber-100 transition hover:border-amber-200 hover:text-white"
-            >
-              Switch
-            </button>
-          </div>
-        ) : null}
-      </div>
-    );
-  }
+  const handleMerchantDisconnect = () => {
+    disconnectMerchantWallet();
+    toast.info('Merchant wallet disconnected');
+  };
+
+  const showNetworkWarning = !isCorrectNetwork && (customerAddress || merchantAddress);
 
   return (
-    <div className="flex items-center gap-3">
-      {connectors?.length > 1 ? (
-        <select
-          value={selectedConnectorId || ''}
-          onChange={(event) => setSelectedConnectorId(event.target.value)}
-          className="rounded-full border border-white/20 bg-black/30 px-3 py-2 text-xs text-white/80 outline-none transition focus:border-blue-400/60 focus:ring-2 focus:ring-blue-400/30"
-        >
-          {connectors.map((connector) => (
-            <option key={connector.id} value={connector.id} disabled={!connector.ready}>
-              {connector.name}
-            </option>
-          ))}
-        </select>
+    <div className="flex flex-col items-end gap-3">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleCustomerConnect}
+            disabled={isConnecting || customerBusy}
+            className="rounded-full bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 px-5 py-2 text-xs font-semibold uppercase tracking-wider text-white shadow-lg shadow-indigo-500/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {customerBusy || isConnecting
+              ? 'Connecting Customer...'
+              : customerAddress
+              ? 'Reconnect Customer'
+              : 'Connect Customer Wallet'}
+          </button>
+          {customerAddress ? (
+            <div className="flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-4 py-1 text-xs text-emerald-200">
+              <span className="font-semibold uppercase tracking-[0.28em]">Customer</span>
+              <span className="font-mono text-sm text-emerald-100">{shortenAddress(customerAddress)}</span>
+              <span className="text-[10px] uppercase tracking-[0.4em] text-emerald-200/80">
+                {formatBalance(customerBalance)} ETH
+              </span>
+              <button
+                onClick={handleCustomerDisconnect}
+                className="rounded-full border border-emerald-200/40 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.4em] text-emerald-200 transition hover:border-red-300 hover:text-red-200"
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleMerchantConnect}
+            disabled={isConnecting || merchantBusy}
+            className="rounded-full bg-gradient-to-br from-emerald-400 via-teal-400 to-cyan-500 px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-900 shadow-lg shadow-emerald-400/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {merchantBusy || isConnecting
+              ? 'Connecting Merchant...'
+              : merchantAddress
+              ? 'Reconnect Merchant'
+              : 'Connect Merchant Wallet'}
+          </button>
+          {merchantAddress ? (
+            <div className="flex items-center gap-2 rounded-full border border-cyan-400/50 bg-cyan-400/15 px-4 py-1 text-xs text-cyan-100">
+              <span className="font-semibold uppercase tracking-[0.28em]">Merchant</span>
+              <span className="font-mono text-sm text-cyan-50">{shortenAddress(merchantAddress)}</span>
+              <span className="text-[10px] uppercase tracking-[0.4em] text-cyan-100/80">
+                {formatBalance(merchantBalance)} ETH
+              </span>
+              <button
+                onClick={handleMerchantDisconnect}
+                className="rounded-full border border-cyan-200/40 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.4em] text-cyan-100 transition hover:border-red-300 hover:text-red-200"
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {showNetworkWarning ? (
+        <div className="flex items-center gap-3 rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
+          <span>
+            Wrong network ({networkChainId ?? 'unknown'}). Switch to Hardhat Localhost (
+            {expectedChainId}).
+          </span>
+          <button
+            onClick={() =>
+              switchToExpectedNetwork().catch((error) => {
+                console.error('Network switch failed:', error);
+                toast.error(error?.message || 'Unable to switch network automatically');
+              })
+            }
+            className="rounded-full border border-amber-200/40 px-3 py-1 font-semibold uppercase tracking-widest text-amber-100 transition hover:border-amber-200 hover:text-white"
+          >
+            Switch
+          </button>
+        </div>
       ) : null}
-      <button
-        onClick={handleConnect}
-        disabled={isConnecting || isWorking}
-        className="rounded-full bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {isConnecting || isWorking ? 'Connecting...' : 'Connect Wallet'}
-      </button>
     </div>
   );
 }

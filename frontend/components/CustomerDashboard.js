@@ -6,7 +6,7 @@ import { useWallet } from '../context/WalletContext';
 import { getStampCount, getRewardCount, getRewardThreshold, redeemReward } from '../lib/web3';
 
 export default function CustomerDashboard() {
-  const { account, provider, signer, isCorrectNetwork } = useWallet();
+  const { customerAddress, provider, customerSigner, isCorrectNetwork } = useWallet();
   const [stampCount, setStampCount] = useState(0);
   const [rewardCount, setRewardCount] = useState(0);
   const [rewardThreshold, setRewardThreshold] = useState(8);
@@ -14,7 +14,7 @@ export default function CustomerDashboard() {
   const [isRedeeming, setIsRedeeming] = useState(false);
 
   const loadCounts = useCallback(async () => {
-    if (!account || !provider || !isCorrectNetwork) {
+    if (!customerAddress || !provider || !isCorrectNetwork) {
       setStampCount(0);
       setRewardCount(0);
       return;
@@ -24,8 +24,8 @@ export default function CustomerDashboard() {
     try {
       const [threshold, stamps, rewards] = await Promise.all([
         getRewardThreshold(provider),
-        getStampCount(account, provider),
-        getRewardCount(account, provider),
+        getStampCount(customerAddress, provider),
+        getRewardCount(customerAddress, provider),
       ]);
       setRewardThreshold(threshold || 8);
       setStampCount(stamps);
@@ -36,21 +36,21 @@ export default function CustomerDashboard() {
     } finally {
       setIsLoading(false);
     }
-  }, [account, provider, isCorrectNetwork]);
+  }, [customerAddress, provider, isCorrectNetwork]);
 
   useEffect(() => {
     loadCounts();
   }, [loadCounts]);
 
   useEffect(() => {
-    if (!account || !provider) return;
+    if (!customerAddress || !provider) return;
 
     const interval = setInterval(loadCounts, 15000);
     return () => clearInterval(interval);
-  }, [account, provider, loadCounts]);
+  }, [customerAddress, provider, loadCounts]);
 
   const handleRedeem = async () => {
-    if (!account || !signer) {
+    if (!customerAddress || !customerSigner) {
       toast.error('Connect your wallet before redeeming rewards.');
       return;
     }
@@ -61,7 +61,7 @@ export default function CustomerDashboard() {
 
     setIsRedeeming(true);
     try {
-      const { hash } = await redeemReward(account, signer);
+      const { hash } = await redeemReward(customerAddress, customerSigner);
       toast.success(`Reward redeemed. Tx: ${hash.slice(0, 10)}…`);
       await loadCounts();
     } catch (error) {
@@ -76,7 +76,7 @@ export default function CustomerDashboard() {
   const stampsNeeded =
     rewardThreshold && cycleStamps === 0 ? rewardThreshold : rewardThreshold - cycleStamps;
   const progress = rewardThreshold ? Math.min((cycleStamps / rewardThreshold) * 100, 100) : 0;
-  const qrValue = useMemo(() => account, [account]);
+  const qrValue = useMemo(() => customerAddress, [customerAddress]);
   const stampSlots = useMemo(
     () =>
       Array.from({ length: rewardThreshold || 0 }, (_, index) => ({
@@ -86,7 +86,7 @@ export default function CustomerDashboard() {
     [rewardThreshold, cycleStamps]
   );
 
-  if (!account) {
+  if (!customerAddress) {
     return (
       <div className="py-12 text-center text-slate-300">
         Connect your wallet to view your digital stamp card.
@@ -133,11 +133,11 @@ export default function CustomerDashboard() {
         <div className="relative mt-4 flex flex-wrap items-center gap-3 text-xs text-blue-100">
           <span className="font-semibold uppercase tracking-widest text-blue-200">Wallet</span>
           <code className="rounded-full bg-blue-400/20 px-3 py-1 font-mono text-blue-100">
-            {account.slice(0, 10)}...{account.slice(-6)}
+            {customerAddress.slice(0, 10)}...{customerAddress.slice(-6)}
           </code>
           <button
             onClick={() => {
-              navigator.clipboard.writeText(account);
+              navigator.clipboard.writeText(customerAddress);
               toast.success('Address copied to clipboard!');
             }}
             className="inline-flex items-center text-blue-100 underline decoration-blue-200/60 decoration-dashed underline-offset-4 transition hover:text-white"
@@ -170,7 +170,7 @@ export default function CustomerDashboard() {
                   </span>
                   <QRCode value={qrValue} size={116} bgColor="#0f172a" fgColor="#fbbf24" />
                   <p className="text-[10px] font-mono uppercase tracking-wide text-amber-100/70">
-                    {account?.slice(0, 6)}…{account?.slice(-4)}
+                    {customerAddress?.slice(0, 6)}…{customerAddress?.slice(-4)}
                   </p>
                 </div>
               ) : null} */}
