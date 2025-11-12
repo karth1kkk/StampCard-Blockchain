@@ -8,6 +8,8 @@
     "install:frontend": "cd frontend && npm install",
     "install:all": "npm run install:hardhat && npm run install:frontend",
     "sync:abi": "node scripts/sync-abi.js",
+    "dev:wallets:generate": "node scripts/dev-tools/generate-wallets.js",
+    "dev:wallets:fund": "node scripts/dev-tools/fund-wallets.js",
     "hardhat:compile": "cd hardhat && npm run compile && cd .. && npm run sync:abi",
     "hardhat:test": "cd hardhat && npm run test",
     "hardhat:node": "cd hardhat && npm run node",

@@ -155,15 +155,15 @@ export default function CustomerDashboard() {
             <div className="pointer-events-none absolute -left-24 -top-20 h-56 w-56 rounded-full bg-amber-500/20 blur-[140px]" />
             <div className="pointer-events-none absolute -right-20 -bottom-24 h-64 w-64 rounded-full bg-amber-400/25 blur-[160px]" />
             <div className="relative z-10 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-              <div>
+              {/* <div>
                 <p className="text-xs uppercase tracking-[0.4em] text-amber-200">Loyalty Passport</p>
                 <h3 className="text-2xl font-black text-white">Stamp &amp; Sip Card</h3>
                 <p className="mt-1 text-sm text-amber-100/80">
                   Collect {rewardThreshold} stamps to unlock a reward. Show this card before
                   every purchase.
                 </p>
-              </div>
-              {qrValue ? (
+              </div> */}
+              {/* {qrValue ? (
                 <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/40 p-4 text-center shadow-inner shadow-amber-500/20 ring-1 ring-amber-100/20">
                   <span className="text-xs font-semibold uppercase tracking-wide text-amber-200">
                     Customer QR
@@ -173,7 +173,7 @@ export default function CustomerDashboard() {
                     {account?.slice(0, 6)}…{account?.slice(-4)}
                   </p>
                 </div>
-              ) : null}
+              ) : null} */}
             </div>
 
             <div className="relative z-10 mt-6 rounded-2xl border border-amber-300/40 bg-black/30 p-5 shadow-inner shadow-amber-500/20">

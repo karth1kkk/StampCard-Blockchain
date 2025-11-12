@@ -178,6 +178,12 @@ Editing `.env.local` requires a restart of the frontend dev server because Next.
    ```
 3. Import one of the private keys printed by `npm run hardhat:node` so the wallet has test ETH/MATIC.
 
+> Development tip: Hardhat now seeds two deterministic wallets. Account #0 (contract owner) uses  
+> `0x59c6995e998f97a5a0044966f094538b6a520438d93f8593b233c36ff23f7dec`. Import this when you need owner privileges.  
+> Account #1 (authorised merchant) uses  
+> `0x8b3a350cf5c34c5edfd2832f440b1046dce476fff58726f0b00057d95f4b5bad`. Import it for merchant demos.  
+> Override these with `OWNER_PRIVATE_KEY` / `MERCHANT_PRIVATE_KEY` in `.env` if you prefer your own keys.
+
 ### Step 6: Connect Wallet and Test
 
 1. Visit [http://localhost:3000](http://localhost:3000).
@@ -245,6 +251,7 @@ Restart Terminal 3 whenever you edit environment variables, then perform a hard 
 - Register outlets, publish QR payloads (with address & website), and manage authorised signer keys.
 - Review analytics: total stamps, rewards granted, and unique customer count.
 - Only authorised merchant addresses can sign challenges; customers still execute the transaction from their own wallet.
+- Authorised merchant signer wallets can now access a limited dashboard to preview their assigned outlets and QR codes without switching to the owner account.
 
 ### Transaction History
 - Displays `StampIssued`, `RewardGranted`, and `RewardRedeemed` events for the connected wallet along with quick explorer links.
@@ -412,3 +419,29 @@ For issues, questions, or contributions, please open an issue on the repository.
 ---
 
 **Built with ❤️ using Hardhat, Next.js, and Ethereum**
+
+## 🔧 Developer Tools: Bulk Wallet Generation & Funding
+
+You can now easily generate and fund multiple test wallets for rapid testing.
+
+Generate test wallets
+
+```bash
+npm run dev:wallets:generate
+```
+
+This creates `bulk-wallets.json` with random wallets and private keys.
+
+Fund wallets
+
+```bash
+# Local Hardhat node funding
+npm run dev:wallets:fund
+
+# Or fund via Amoy testnet (edit .env with Amoy RPC and your funded dev wallet key)
+RPC_URL=https://rpc-amoy.polygon.technology FUNDING_PRIVATE_KEY=0x... npm run dev:wallets:fund
+```
+
+Each wallet receives `FUND_AMOUNT` POL (default 0.5).
+
+Import private keys into MetaMask for simulation or demo testing.

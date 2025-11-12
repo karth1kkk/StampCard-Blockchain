@@ -1,8 +1,13 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const deploymentPath = path.join(__dirname, '..', 'deployment.json');
 const envPath = path.join(__dirname, '..', 'frontend', '.env.local');
+
+const HARDHAT_CHAIN_ID = 31337;
+const DEFAULT_NATIVE_SYMBOL = 'ETH';
+const FALLBACK_HOST = '127.0.0.1';
 
 const REQUIRED_KEYS = [
   'NEXT_PUBLIC_CONTRACT_ADDRESS',
@@ -11,6 +16,23 @@ const REQUIRED_KEYS = [
   'NEXT_PUBLIC_CHAIN_ID',
   'NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL',
 ];
+
+function resolveLocalHost() {
+  if (process.env.LOCAL_RPC_HOST) {
+    return process.env.LOCAL_RPC_HOST;
+  }
+
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    for (const details of iface || []) {
+      if (details.family === 'IPv4' && !details.internal) {
+        return details.address;
+      }
+    }
+  }
+
+  return FALLBACK_HOST;
+}
 
 function readDeployment() {
   if (!fs.existsSync(deploymentPath)) {
@@ -22,12 +44,15 @@ function readDeployment() {
     throw new Error('deployment.json missing contract address');
   }
 
+  const rpcUrl = json.rpcUrl || `http://${resolveLocalHost()}:8545`;
+
   return {
     address: json.address,
     network: json.network || 'localhost',
-    rpcUrl: json.rpcUrl || 'http://127.0.0.1:8545',
-    chainId: json.chainId ?? 1337,
-    nativeSymbol: json.nativeSymbol || 'ETH',
+    rpcUrl,
+    chainId: json.chainId ?? HARDHAT_CHAIN_ID,
+    nativeSymbol: json.nativeSymbol || DEFAULT_NATIVE_SYMBOL,
+    rpcHost: new URL(rpcUrl).hostname,
   };
 }
 
@@ -61,10 +86,11 @@ function main() {
 
   envValues.NEXT_PUBLIC_CONTRACT_ADDRESS = deployment.address;
   envValues.NEXT_PUBLIC_NETWORK = deployment.network;
-  envValues.NEXT_PUBLIC_RPC_URL = envValues.NEXT_PUBLIC_RPC_URL || deployment.rpcUrl;
+  envValues.NEXT_PUBLIC_RPC_URL = deployment.rpcUrl;
   envValues.NEXT_PUBLIC_CHAIN_ID = String(deployment.chainId);
   envValues.NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL =
     envValues.NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL || deployment.nativeSymbol;
+  envValues.NEXT_PUBLIC_RPC_HOST = deployment.rpcHost;
 
   for (const key of REQUIRED_KEYS) {
     if (!envValues[key]) {

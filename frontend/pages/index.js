@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import WalletConnect from '../components/WalletConnect';
@@ -83,17 +83,25 @@ const insightArticles = [
 ];
 
 export default function Home() {
-  const { account, isOwner } = useWallet();
+  const { account, isOwner, isMerchant } = useWallet();
   const [activeTab, setActiveTab] = useState('customer');
 
   const tabs = useMemo(() => {
     const base = [
       { id: 'customer', label: 'Customer' },
-      ...(isOwner ? [{ id: 'merchant', label: 'Merchant' }] : []),
+      ...(isOwner || isMerchant
+        ? [{ id: 'merchant', label: isOwner ? 'Merchant' : 'Merchant (Authorised)' }]
+        : []),
       { id: 'history', label: 'History' },
     ];
     return base;
-  }, [isOwner]);
+  }, [isOwner, isMerchant]);
+
+  useEffect(() => {
+    if (activeTab === 'merchant' && !(isOwner || isMerchant)) {
+      setActiveTab('customer');
+    }
+  }, [activeTab, isOwner, isMerchant]);
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -176,7 +184,7 @@ export default function Home() {
                   <div className="space-y-6">
                     {heroHighlights.map((item) => (
                       <div key={item.label} className="flex items-center gap-4">
-                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 text-2xl font-semibold text-white shadow-lg shadow-blue-500/40">
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 text-md font-semibold text-white shadow-lg shadow-blue-500/40">
                           {item.value}
                         </div>
                         <p className="text-sm text-slate-300">{item.label}</p>
@@ -310,7 +318,7 @@ export default function Home() {
 
             <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-6 shadow-2xl shadow-indigo-900/30 backdrop-blur-2xl sm:p-10">
               {activeTab === 'customer' && <CustomerDashboard />}
-              {activeTab === 'merchant' && isOwner && <MerchantDashboard />}
+              {activeTab === 'merchant' && (isOwner || isMerchant) && <MerchantDashboard />}
               {activeTab === 'history' && <TransactionHistory />}
             </section>
           </div>

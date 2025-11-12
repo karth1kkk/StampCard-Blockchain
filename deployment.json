@@ -1,7 +1,8 @@
 {
-  "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "address": "0x99E1F4803c78Cd4edDCcB0EcF018c78299879cB3",
   "network": "localhost",
   "chainId": 1337,
-  "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "timestamp": "2025-11-10T03:41:31.297Z"
+  "deployer": "0xB9E521b0b8015142F25EBAE447219554Ac2efAed",
+  "rewardThreshold": 8,
+  "timestamp": "2025-11-11T13:57:50.985Z"
 }

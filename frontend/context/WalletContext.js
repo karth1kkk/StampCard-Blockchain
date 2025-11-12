@@ -1,7 +1,11 @@
 import { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { ethers } from 'ethers';
 import { useAccount, useConnect, useDisconnect, useChainId, useSwitchNetwork } from 'wagmi';
-import { checkContractDeployed, isOwner as checkOwner } from '../lib/web3';
+import {
+  checkContractDeployed,
+  isOwner as checkOwner,
+  isMerchantAuthorizedOnChain,
+} from '../lib/web3';
 
 const WalletContext = createContext();
 
@@ -26,6 +30,8 @@ export const WalletProvider = ({ children }) => {
   const [signer, setSigner] = useState(null);
   const [isOwner, setIsOwner] = useState(false);
   const [isOwnerLoading, setIsOwnerLoading] = useState(false);
+  const [isMerchant, setIsMerchant] = useState(false);
+  const [isMerchantLoading, setIsMerchantLoading] = useState(false);
 
   const account = address || null;
   const isConnecting = status === 'connecting' || connectPending || networkPending;
@@ -95,6 +101,33 @@ export const WalletProvider = ({ children }) => {
     determineOwner();
   }, [account, provider]);
 
+  useEffect(() => {
+    const determineMerchant = async () => {
+      if (!account || !provider) {
+        setIsMerchant(false);
+        return;
+      }
+
+      setIsMerchantLoading(true);
+      try {
+        const deployed = await checkContractDeployed(provider);
+        if (!deployed) {
+          setIsMerchant(false);
+          return;
+        }
+        const merchantMatch = await isMerchantAuthorizedOnChain(account, provider);
+        setIsMerchant(merchantMatch);
+      } catch (error) {
+        console.error('Unable to determine merchant status:', error);
+        setIsMerchant(false);
+      } finally {
+        setIsMerchantLoading(false);
+      }
+    };
+
+    determineMerchant();
+  }, [account, provider]);
+
   const connect = useCallback(
     async (connectorId) => {
       const targetConnector =
@@ -116,6 +149,7 @@ export const WalletProvider = ({ children }) => {
     setProvider(null);
     setSigner(null);
     setIsOwner(false);
+    setIsMerchant(false);
   }, [disconnectAsync]);
 
   const switchToExpectedNetwork = useCallback(async () => {
@@ -132,6 +166,8 @@ export const WalletProvider = ({ children }) => {
       signer,
       isOwner,
       isOwnerLoading,
+      isMerchant,
+      isMerchantLoading,
       isConnecting,
       isDisconnecting,
       isCorrectNetwork,
@@ -147,6 +183,8 @@ export const WalletProvider = ({ children }) => {
       signer,
       isOwner,
       isOwnerLoading,
+      isMerchant,
+      isMerchantLoading,
       isConnecting,
       isDisconnecting,
       isCorrectNetwork,

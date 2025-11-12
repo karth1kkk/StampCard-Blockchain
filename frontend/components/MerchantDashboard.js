@@ -22,6 +22,7 @@ export default function MerchantDashboard() {
     provider,
     signer,
     isOwner,
+    isMerchant,
     isCorrectNetwork,
     switchToExpectedNetwork,
   } = useWallet();
@@ -88,7 +89,18 @@ export default function MerchantDashboard() {
         throw new Error('Failed to fetch outlets');
       }
       const data = await response.json();
-      setOutlets(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      if (isOwner) {
+        setOutlets(list);
+      } else {
+        const lowerAccount = account.toLowerCase();
+        const filtered = list.filter((outlet) => {
+          const merchantAddress =
+            (outlet.merchant_address || outlet.merchantAddress || '').toLowerCase();
+          return merchantAddress && merchantAddress === lowerAccount;
+        });
+        setOutlets(filtered);
+      }
     } catch (error) {
       console.error('Outlet fetch failed:', error);
       toast.error(error?.message || 'Unable to load merchant outlets.');
@@ -96,14 +108,14 @@ export default function MerchantDashboard() {
     } finally {
       setOutletsLoading(false);
     }
-  }, [account]);
+  }, [account, isOwner]);
 
   useEffect(() => {
-    if (account && provider && isOwner) {
+    if (account && provider && (isOwner || isMerchant)) {
       loadAnalytics();
       loadOutlets();
     }
-  }, [account, provider, isOwner, loadAnalytics, loadOutlets]);
+  }, [account, provider, isOwner, isMerchant, loadAnalytics, loadOutlets]);
 
   useEffect(() => {
     if (!ethers.isAddress(authAddress) || !provider) {
@@ -125,7 +137,11 @@ export default function MerchantDashboard() {
   }, [authAddress, provider]);
 
   useEffect(() => {
-    if (outlets.length && !selectedOutletId) {
+    if (!outlets.length) {
+      setSelectedOutletId(null);
+      return;
+    }
+    if (!selectedOutletId || !outlets.some((outlet) => outlet.id === selectedOutletId)) {
       setSelectedOutletId(outlets[0].id);
     }
   }, [outlets, selectedOutletId]);
@@ -155,6 +171,10 @@ export default function MerchantDashboard() {
     return JSON.stringify(payload);
   }, [selectedOutlet, selectedMerchantAddress, selectedChallengeUrl]);
 
+  const noOutletMessage = isOwner
+    ? 'No outlets registered yet. Use the form above to add your first location.'
+    : 'No outlets are linked to this merchant wallet yet. Ask the contract owner to register an outlet with your signer address.';
+
   const ensureNetwork = useCallback(async () => {
     if (!isCorrectNetwork) {
       await switchToExpectedNetwork();
@@ -164,6 +184,10 @@ export default function MerchantDashboard() {
   const handleAuthorize = async () => {
     if (!signer) {
       toast.error('Connect your wallet before authorising a merchant.');
+      return;
+    }
+    if (!isOwner) {
+      toast.error('Only the contract owner can manage merchant authorisations.');
       return;
     }
     if (!isValidAddress(authAddress)) {
@@ -193,6 +217,10 @@ export default function MerchantDashboard() {
       toast.error('Connect your wallet before revoking a merchant.');
       return;
     }
+    if (!isOwner) {
+      toast.error('Only the contract owner can manage merchant authorisations.');
+      return;
+    }
     if (!isValidAddress(authAddress)) {
       toast.error('Enter a valid merchant address.');
       return;
@@ -217,6 +245,10 @@ export default function MerchantDashboard() {
 
   const handleRegisterOutlet = async (event) => {
     event.preventDefault();
+    if (!isOwner) {
+      toast.error('Only the contract owner can register new outlets.');
+      return;
+    }
     if (!newOutlet.name || !newOutlet.challengeUrl) {
       toast.error('Outlet name and challenge URL are required.');
       return;
@@ -274,12 +306,12 @@ export default function MerchantDashboard() {
     }
   };
 
-  if (!isOwner) {
+  if (!isOwner && !isMerchant) {
     return (
       <div className="py-12 text-center text-slate-300">
         <p>You are not authorised to access the merchant dashboard.</p>
         <p className="mt-2 text-sm text-slate-400">
-          Only the contract owner can manage merchant onboarding and QR issuance.
+          Only the contract owner or an authorised merchant signer can manage these tools.
         </p>
       </div>
     );
@@ -289,13 +321,16 @@ export default function MerchantDashboard() {
     <div className="space-y-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.4em] text-purple-200">Owner Controls</p>
+          <p className="text-xs uppercase tracking-[0.4em] text-purple-200">
+            {isOwner ? 'Owner Controls' : 'Merchant Access'}
+          </p>
           <h2 className="text-3xl font-semibold text-white sm:text-4xl">
             Merchant Operations Console
           </h2>
           <p className="mt-2 max-w-xl text-sm text-slate-300">
-            Register new outlets, authorise signer keys, and generate QR payloads. Customers scan
-            these codes to request stamps from their own wallets.
+            {isOwner
+              ? 'Register new outlets, authorise signer keys, and generate QR payloads. Customers scan these codes to request stamps from their own wallets.'
+              : 'Preview outlet QR codes and monitor programme activity. Contact the contract owner if you need new outlets or signer permissions.'}
           </p>
         </div>
         <button
@@ -305,144 +340,158 @@ export default function MerchantDashboard() {
           {analyticsLoading ? 'Refreshing…' : 'Refresh Analytics'}
         </button>
       </div>
-
-      <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-        <form
-          onSubmit={handleRegisterOutlet}
-          className="relative overflow-hidden rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-6 shadow-[0_40px_120px_-60px_rgba(16,185,129,0.75)] backdrop-blur-xl"
-        >
-          <div className="pointer-events-none absolute -right-24 bottom-0 h-44 w-44 rounded-full bg-emerald-400/20 blur-[130px]" />
-          <div className="relative space-y-4">
-            <h3 className="text-lg font-semibold text-emerald-100">Register Outlet Metadata</h3>
-            <p className="text-sm text-emerald-100/80">
-              Stored off-chain in Supabase to power analytics and QR generation. Challenge URL should
-              point to your merchant signer endpoint.
-            </p>
-            <div className="grid gap-4 sm:grid-cols-2">
+      {isOwner ? (
+        <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+          <form
+            onSubmit={handleRegisterOutlet}
+            className="relative overflow-hidden rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-6 shadow-[0_40px_120px_-60px_rgba(16,185,129,0.75)] backdrop-blur-xl"
+          >
+            <div className="pointer-events-none absolute -right-24 bottom-0 h-44 w-44 rounded-full bg-emerald-400/20 blur-[130px]" />
+            <div className="relative space-y-4">
+              <h3 className="text-lg font-semibold text-emerald-100">Register Outlet Metadata</h3>
+              <p className="text-sm text-emerald-100/80">
+                Stored off-chain in Supabase to power analytics and QR generation. Challenge URL
+                should point to your merchant signer endpoint.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
+                  Outlet Name
+                  <input
+                    value={newOutlet.name}
+                    onChange={(event) =>
+                      setNewOutlet((prev) => ({ ...prev, name: event.target.value }))
+                    }
+                    required
+                    className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
+                    placeholder="Stamp & Sip Café"
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
+                  Merchant Signer Address
+                  <input
+                    value={newOutlet.merchantAddress}
+                    onChange={(event) =>
+                      setNewOutlet((prev) => ({ ...prev, merchantAddress: event.target.value }))
+                    }
+                    className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 font-mono text-xs text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
+                    placeholder="0xSigner..."
+                  />
+                  <span className="text-[10px] uppercase tracking-widest text-white/40">
+                    Must match MERCHANT_SIGNER_PRIVATE_KEY (dev only).
+                  </span>
+                </label>
+                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
+                  Location (Address)
+                  <input
+                    value={newOutlet.location}
+                    onChange={(event) =>
+                      setNewOutlet((prev) => ({ ...prev, location: event.target.value }))
+                    }
+                    className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
+                    placeholder="123 Bean Street, Singapore"
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
+                  Website
+                  <input
+                    value={newOutlet.website}
+                    onChange={(event) =>
+                      setNewOutlet((prev) => ({ ...prev, website: event.target.value }))
+                    }
+                    className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
+                    placeholder="https://stampandsip.com"
+                  />
+                </label>
+              </div>
               <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-                Outlet Name
+                Challenge URL
                 <input
-                  value={newOutlet.name}
+                  value={newOutlet.challengeUrl}
                   onChange={(event) =>
-                    setNewOutlet((prev) => ({ ...prev, name: event.target.value }))
+                    setNewOutlet((prev) => ({ ...prev, challengeUrl: event.target.value }))
                   }
                   required
                   className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
-                  placeholder="Stamp & Sip Café"
-                />
-              </label>
-              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-                Merchant Signer Address
-                <input
-                  value={newOutlet.merchantAddress}
-                  onChange={(event) =>
-                    setNewOutlet((prev) => ({ ...prev, merchantAddress: event.target.value }))
-                  }
-                  className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 font-mono text-xs text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
-                  placeholder="0xSigner..."
+                  placeholder={DEFAULT_CHALLENGE_URL}
                 />
                 <span className="text-[10px] uppercase tracking-widest text-white/40">
-                  Must match MERCHANT_SIGNER_PRIVATE_KEY (dev only).
+                  Customers call this endpoint to fetch the merchant-signed challenge.
                 </span>
               </label>
-              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-                Location (Address)
-                <input
-                  value={newOutlet.location}
-                  onChange={(event) =>
-                    setNewOutlet((prev) => ({ ...prev, location: event.target.value }))
-                  }
-                  className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
-                  placeholder="123 Bean Street, Singapore"
-                />
-              </label>
-              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-                Website
-                <input
-                  value={newOutlet.website}
-                  onChange={(event) =>
-                    setNewOutlet((prev) => ({ ...prev, website: event.target.value }))
-                  }
-                  className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
-                  placeholder="https://stampandsip.com"
-                />
-              </label>
+              <button
+                type="submit"
+                disabled={isRegisteringOutlet}
+                className="w-full rounded-full bg-gradient-to-r from-emerald-300 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-widest text-slate-900 shadow-lg shadow-emerald-400/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isRegisteringOutlet ? 'Saving outlet…' : 'Save Outlet'}
+              </button>
             </div>
-            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-              Challenge URL
-              <input
-                value={newOutlet.challengeUrl}
-                onChange={(event) =>
-                  setNewOutlet((prev) => ({ ...prev, challengeUrl: event.target.value }))
-                }
-                required
-                className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 text-sm text-white/80 outline-none transition focus:border-emerald-300/60 focus:ring-2 focus:ring-emerald-300/40"
-                placeholder={DEFAULT_CHALLENGE_URL}
-              />
-              <span className="text-[10px] uppercase tracking-widest text-white/40">
-                Customers call this endpoint to fetch the merchant-signed challenge.
-              </span>
-            </label>
-            <button
-              type="submit"
-              disabled={isRegisteringOutlet}
-              className="w-full rounded-full bg-gradient-to-r from-emerald-300 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-widest text-slate-900 shadow-lg shadow-emerald-400/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isRegisteringOutlet ? 'Saving outlet…' : 'Save Outlet'}
-            </button>
-          </div>
-        </form>
+          </form>
 
-        <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-2xl shadow-indigo-900/40 backdrop-blur-2xl">
-          <h3 className="text-lg font-semibold text-white">Authorise Merchant Signers</h3>
-          <p className="mt-2 text-sm text-slate-300">
-            Stamps can only be minted when a customer presents a signature from an authorised
-            merchant. Use this form to manage the allowlist.
-          </p>
-          <div className="mt-5 space-y-4">
-            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-              Merchant Address
-              <input
-                value={authAddress}
-                onChange={(event) => setAuthAddress(event.target.value)}
-                placeholder="0xMerchant..."
-                className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 font-mono text-xs text-white/80 outline-none transition focus:border-blue-400/60 focus:ring-2 focus:ring-blue-400/40"
-              />
-            </label>
-            {authStatus !== null && (
-              <p
-                className={`text-xs font-semibold uppercase tracking-widest ${
-                  authStatus ? 'text-emerald-300' : 'text-red-300'
-                }`}
-              >
-                Status: {authStatus ? 'Authorised' : 'Not authorised'}
-              </p>
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={handleAuthorize}
-                disabled={isAuthorising}
-                className="rounded-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-white shadow-lg shadow-blue-600/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isAuthorising ? 'Authorising…' : 'Authorise'}
-              </button>
-              <button
-                type="button"
-                onClick={handleRevoke}
-                disabled={isRevoking}
-                className="rounded-full border border-red-400/40 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-red-200 transition hover:border-red-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isRevoking ? 'Revoking…' : 'Revoke'}
-              </button>
-            </div>
-            <p className="text-[11px] uppercase tracking-widest text-white/40">
-              Ensure you run `set MERCHANT_SIGNER_PRIVATE_KEY` on the server with the authorised
-              signer&apos;s private key (dev only).
+          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-2xl shadow-indigo-900/40 backdrop-blur-2xl">
+            <h3 className="text-lg font-semibold text-white">Authorise Merchant Signers</h3>
+            <p className="mt-2 text-sm text-slate-300">
+              Stamps can only be minted when a customer presents a signature from an authorised
+              merchant. Use this form to manage the allowlist.
             </p>
+            <div className="mt-5 space-y-4">
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
+                Merchant Address
+                <input
+                  value={authAddress}
+                  onChange={(event) => setAuthAddress(event.target.value)}
+                  placeholder="0xMerchant..."
+                  className="rounded-2xl border border-white/20 bg-black/40 px-3 py-2 font-mono text-xs text-white/80 outline-none transition focus:border-blue-400/60 focus:ring-2 focus:ring-blue-400/40"
+                />
+              </label>
+              {authStatus !== null && (
+                <p
+                  className={`text-xs font-semibold uppercase tracking-widest ${
+                    authStatus ? 'text-emerald-300' : 'text-red-300'
+                  }`}
+                >
+                  Status: {authStatus ? 'Authorised' : 'Not authorised'}
+                </p>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={handleAuthorize}
+                  disabled={isAuthorising}
+                  className="rounded-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-white shadow-lg shadow-blue-600/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isAuthorising ? 'Authorising…' : 'Authorise'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRevoke}
+                  disabled={isRevoking}
+                  className="rounded-full border border-red-400/40 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-red-200 transition hover:border-red-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isRevoking ? 'Revoking…' : 'Revoke'}
+                </button>
+              </div>
+              <p className="text-[11px] uppercase tracking-widest text-white/40">
+                Ensure you run `set MERCHANT_SIGNER_PRIVATE_KEY` on the server with the authorised
+                signer&apos;s private key (dev only).
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-2xl shadow-indigo-900/40 backdrop-blur-2xl">
+          <h3 className="text-lg font-semibold text-white">Authorised Merchant Session</h3>
+          <p className="mt-2 text-sm text-slate-300">
+            Connected wallet <span className="font-mono text-xs text-slate-100">{account}</span> is
+            authorised to issue QR codes and view analytics. Ask the contract owner if you need new
+            outlets or signer changes.
+          </p>
+          <p className="mt-4 text-xs text-slate-400">
+            Use the QR generator below to print codes for your assigned outlets. Each QR encodes the
+            location, website, and challenge endpoint required by customers.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="rounded-3xl border border-blue-500/20 bg-blue-500/10 p-6 shadow-xl shadow-blue-900/40 backdrop-blur-2xl">
@@ -490,7 +539,7 @@ export default function MerchantDashboard() {
           </div>
         ) : outlets.length === 0 ? (
           <div className="mt-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6 text-center text-slate-300">
-            No outlets registered yet. Use the form above to add your first location.
+            {noOutletMessage}
           </div>
         ) : (
           <div className="mt-6 grid gap-4 lg:grid-cols-[0.55fr_0.45fr]">
