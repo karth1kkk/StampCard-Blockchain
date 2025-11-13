@@ -1,6 +1,6 @@
-import { createOutlet } from '../../../lib/db';
+import { createMerchantCredentials } from '../../../lib/supabaseServer';
 
-const registrationSecret = process.env.MERCHANT_REGISTRATION_SECRET;
+const registrationSecret = process.env.MERCHANT_REGISTRATION_SECRET || '31337';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -14,38 +14,29 @@ export default async function handler(req, res) {
     }
   }
 
-  const {
-    name,
-    address,
-    ownerAddress,
-    merchantAddress,
-    location,
-    website,
-    challengeUrl,
-    signerPublicKey,
-  } = req.body || {};
+  const { name, email, password, secret } = req.body || {};
 
-  if (!name || !ownerAddress || !merchantAddress || !challengeUrl) {
+  if (!name || !email || !password || !secret) {
     return res.status(400).json({
-      error: 'name, ownerAddress, merchantAddress, and challengeUrl are required fields.',
+      error: 'name, email, password, and secret are required fields.',
     });
   }
 
+  if (secret !== registrationSecret) {
+    return res.status(401).json({ error: 'Secret code is invalid.' });
+  }
+
   try {
-    const result = await createOutlet({
-      name,
-      address,
-      ownerAddress,
-      merchantAddress,
-      location,
-      website,
-      challengeUrl,
-      signerPublicKey,
+    const user = await createMerchantCredentials({
+      email,
+      password,
+      displayName: name,
     });
 
     return res.status(200).json({
-      success: Boolean(result.lastInsertRowid),
-      id: result.lastInsertRowid,
+      success: Boolean(user?.id),
+      id: user?.id ?? null,
+      email: user?.email ?? email,
     });
   } catch (error) {
     console.error('Merchant registration failed:', error);

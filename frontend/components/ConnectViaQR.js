@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { toast } from 'react-toastify';
 import { useWallet } from '../context/WalletContext';
 import { COFFEE_MENU } from '../constants/products';
+import { MERCHANT_WALLET_ADDRESS, LOYALTY_CONTRACT_ADDRESS } from '../lib/constants';
 
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_TOKEN_ADDRESS || '';
 const TOKEN_SYMBOL = 'BWT';
@@ -34,9 +35,13 @@ export default function ConnectViaQR() {
   const amountToUse = selectedProduct ? selectedProduct.price : customAmount || '0';
 
   const payload = useMemo(() => {
-    if (!merchantAddress) return null;
+    const contractRecipient =
+      MERCHANT_WALLET_ADDRESS ||
+      LOYALTY_CONTRACT_ADDRESS ||
+      merchantAddress;
+    if (!contractRecipient) return null;
     return buildPayload({
-      merchantAddress,
+      merchantAddress: contractRecipient,
       chainId: expectedChainId,
       amount: amountToUse,
       product: selectedProduct

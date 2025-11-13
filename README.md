@@ -132,11 +132,14 @@ NEXT_PUBLIC_NETWORK=hardhat-localhost
 NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=ETH
 NEXT_PUBLIC_REWARD_THRESHOLD=8
 MERCHANT_ACCESS_MESSAGE=CoffeeLoyaltyMerchantAccess
+NEXT_PUBLIC_MERCHANT_WALLET=0x...        # wallet that should receive BrewToken payments
 ```
 
 Additional options:
 - `MERCHANT_API_KEY` (legacy; replaced by owner signature flow).
 - Supabase secrets listed above.
+- Optional reward email settings for POS notifications:
+  - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `REWARD_EMAIL_FROM`
 
 ## ☕ Using the DApp
 
@@ -152,7 +155,8 @@ Additional options:
 2. Review live stats (stamp totals, pending rewards, reward pool balance).
 3. Redeem free drinks by clicking **Redeem Reward** next to a customer (executes on-chain + posts to Supabase).
 4. Fund the reward pool when required (pulls BWT from the owner wallet into CoffeeLoyalty).
-5. Print QR codes for each coffee via the **Coffee Menu QR** module.
+5. Launch the real-time POS at `/pos` to process BrewToken payments, generate EIP-681 QR codes, and auto-record stamps after each transfer.
+6. POS sessions auto-expire after 2 minutes of inactivity; merchants must log back in via Supabase Auth to continue.
 
 ### Transaction History
 The History tab aggregates purchases and reward redemptions from Supabase (wallet-specific if connected, global otherwise).

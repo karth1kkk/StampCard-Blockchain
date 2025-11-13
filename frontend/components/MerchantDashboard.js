@@ -7,9 +7,10 @@ import {
   fundRewardsOnChain,
   getTokenBalance,
   getRewardTokenAmount,
+  transferTokensOnChain,
 } from '../lib/web3';
 import ConnectViaQR from './ConnectViaQR';
-import { BREW_TOKEN_SYMBOL } from '../lib/constants';
+import { BREW_TOKEN_SYMBOL, MERCHANT_WALLET_ADDRESS, LOYALTY_CONTRACT_ADDRESS } from '../lib/constants';
 
 const formatBWT = (value) => {
   try {
@@ -19,26 +20,49 @@ const formatBWT = (value) => {
   }
 };
 
-const ACCESS_MESSAGE = process.env.MERCHANT_ACCESS_MESSAGE || 'CoffeeLoyaltyMerchantAccess';
+const shortenAddress = (value) =>
+  value ? `${value.slice(0, 6)}…${value.slice(-4)}` : '—';
+
 const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
 
-export default function MerchantDashboard() {
+export default function MerchantDashboard({ session }) {
   const {
     customerAddress,
     customerSigner,
     provider,
-    isOwner,
-    isOwnerLoading,
     isCorrectNetwork,
     ensureCorrectNetwork,
+    isOwner,
   } = useWallet();
+
+  const accessToken = session?.access_token || null;
+  const merchantEmail = session?.user?.email || null;
 
   const [customers, setCustomers] = useState([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
-  const [ownerSignature, setOwnerSignature] = useState(null);
   const [rewardPoolBalance, setRewardPoolBalance] = useState(0n);
   const [rewardTokenAmount, setRewardTokenAmount] = useState(0n);
   const [isFunding, setIsFunding] = useState(false);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [isTransferPanelVisible, setIsTransferPanelVisible] = useState(false);
+  const [transferWallet, setTransferWallet] = useState('');
+  const [transferAmount, setTransferAmount] = useState('');
+
+  const merchantContractAddress = useMemo(() => {
+    const raw =
+      MERCHANT_WALLET_ADDRESS ||
+      LOYALTY_CONTRACT_ADDRESS ||
+      LOYALTY_ADDRESS ||
+      '';
+    if (!raw) {
+      return '';
+    }
+    try {
+      return ethers.getAddress(raw);
+    } catch (error) {
+      return raw;
+    }
+  }, []);
 
   const totals = useMemo(() => {
     const stampTotal = customers.reduce((acc, customer) => acc + (customer.stamp_count || 0), 0);
@@ -55,42 +79,18 @@ export default function MerchantDashboard() {
     };
   }, [customers]);
 
-  const signOwnerMessage = useCallback(async () => {
-    if (!customerSigner || !customerAddress) {
-      throw new Error('Connect the contract owner wallet to continue.');
-    }
-    const message = `${ACCESS_MESSAGE}:${customerAddress.toLowerCase()}`;
-    const signature = await customerSigner.signMessage(message);
-    setOwnerSignature(signature);
-    return signature;
-  }, [customerSigner, customerAddress]);
-
   const fetchCustomers = useCallback(async () => {
-    if (!customerAddress || !customerSigner) {
+    if (!accessToken) {
+      toast.error('Sign in with Google to load customer data.');
       return;
     }
-    if (!isOwner) {
-      toast.error('Connect the contract owner wallet to load customer data.');
-      return;
-    }
-    if (!isCorrectNetwork) {
-      try {
-        await ensureCorrectNetwork();
-      } catch (error) {
-        toast.error(error?.message || 'Network switch rejected.');
-      return;
-      }
-    }
-
     try {
       setLoadingCustomers(true);
-      const signature = ownerSignature || (await signOwnerMessage());
-      const params = new URLSearchParams({
-        scope: 'all',
-        owner: customerAddress,
-        signature,
+      const response = await fetch(`/api/customers?scope=all`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       });
-      const response = await fetch(`/api/customers?${params.toString()}`);
       if (!response.ok) {
         throw new Error((await response.json())?.error || 'Unable to load customers');
       }
@@ -102,7 +102,7 @@ export default function MerchantDashboard() {
     } finally {
       setLoadingCustomers(false);
     }
-  }, [customerAddress, customerSigner, isOwner, isCorrectNetwork, ensureCorrectNetwork, ownerSignature, signOwnerMessage]);
+  }, [accessToken]);
 
   const refreshRewardPool = useCallback(async () => {
     if (!provider) {
@@ -120,19 +120,84 @@ export default function MerchantDashboard() {
     }
   }, [provider]);
 
+  const toggleTransferPanel = useCallback(() => {
+    setIsTransferPanelVisible((visible) => !visible);
+  }, []);
+
+  const handleTokenTransfer = useCallback(
+    async (event) => {
+      event.preventDefault();
+      if (!customerSigner || !customerAddress) {
+        toast.error('Connect the owner wallet first.');
+        return;
+      }
+      if (!transferWallet || !ethers.isAddress(transferWallet)) {
+        toast.error('Enter a valid customer wallet address.');
+        return;
+      }
+      if (!transferAmount || Number(transferAmount) <= 0) {
+        toast.error('Enter a transfer amount greater than zero.');
+        return;
+      }
+      try {
+        if (!isCorrectNetwork) {
+          await ensureCorrectNetwork();
+        }
+        setIsTransferring(true);
+        const amountWei = ethers.parseUnits(transferAmount, 18);
+        const { hash } = await transferTokensOnChain(
+          { to: transferWallet, amountWei },
+          customerSigner
+        );
+        toast.success(`Sent ${transferAmount} ${BREW_TOKEN_SYMBOL} to ${transferWallet.slice(0, 6)}… · tx: ${hash.slice(0, 10)}…`);
+        setTransferAmount('');
+        setTransferWallet('');
+        await Promise.all([refreshRewardPool(), fetchCustomers()]);
+      } catch (error) {
+        console.error('Token transfer failed:', error);
+        const message =
+          error?.shortMessage ||
+          error?.reason ||
+          error?.message ||
+          'Token transfer failed. Check balance and try again.';
+        toast.error(message);
+      } finally {
+        setIsTransferring(false);
+      }
+    },
+    [
+      customerAddress,
+      customerSigner,
+      ensureCorrectNetwork,
+      fetchCustomers,
+      isCorrectNetwork,
+      refreshRewardPool,
+      transferAmount,
+      transferWallet,
+    ]
+  );
+
   useEffect(() => {
     refreshRewardPool();
   }, [refreshRewardPool]);
 
   useEffect(() => {
-    if (isOwner && customerAddress) {
+    if (accessToken) {
       fetchCustomers();
     }
-  }, [isOwner, customerAddress, fetchCustomers]);
+  }, [accessToken, fetchCustomers]);
 
   const handleRedeemReward = async (walletAddress) => {
+    if (!accessToken) {
+      toast.error('Sign in with Google first.');
+      return;
+    }
     if (!customerSigner || !customerAddress) {
       toast.error('Connect the owner wallet first.');
+      return;
+    }
+    if (!isOwner) {
+      toast.error('Connected wallet is not authorised to redeem rewards.');
       return;
     }
     try {
@@ -141,17 +206,17 @@ export default function MerchantDashboard() {
       }
       const { hash, receipt } = await redeemRewardOnChain(walletAddress, customerSigner);
       toast.success(`Reward redeemed for ${walletAddress.slice(0, 6)}… — tx: ${hash.slice(0, 10)}…`);
-      const signature = ownerSignature || (await signOwnerMessage());
       await fetch('/api/stamps', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
         body: JSON.stringify({
           address: walletAddress,
           txHash: hash,
           blockNumber: receipt?.blockNumber || null,
           rewardAmountBWT: Number(ethers.formatUnits(rewardTokenAmount, 18)),
-          owner: customerAddress,
-          signature,
         }),
       }).catch((error) => console.error('Failed to sync reward redemption', error));
       await Promise.all([fetchCustomers(), refreshRewardPool()]);
@@ -185,20 +250,6 @@ export default function MerchantDashboard() {
     }
   };
 
-  if (isOwnerLoading) {
-    return (
-      <div className="py-12 text-center text-slate-300">Checking owner permissions…</div>
-    );
-  }
-
-  if (!isOwner) {
-    return (
-      <div className="py-12 text-center text-slate-300">
-        Connect the wallet that deployed the CoffeeLoyalty contract to manage the merchant dashboard.
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -209,23 +260,35 @@ export default function MerchantDashboard() {
             Review loyalty performance, redeem free drinks for customers, and generate QR codes for easy mobile
             checkout.
           </p>
+          {merchantContractAddress ? (
+            <p className="mt-4 text-xs font-mono text-emerald-200/80">
+              Contract: {shortenAddress(merchantContractAddress)}
+            </p>
+          ) : (
+            <p className="mt-4 text-xs text-red-200">Contract address not configured.</p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-        <button
+          {merchantEmail ? (
+            <span className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-xs uppercase tracking-[0.3em] text-emerald-100">
+              {merchantEmail}
+            </span>
+          ) : null}
+          <button
             onClick={fetchCustomers}
-            disabled={loadingCustomers}
+            disabled={loadingCustomers || !accessToken}
             className="rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loadingCustomers ? 'Refreshing…' : 'Refresh Customers'}
-                </button>
-                <button
+          </button>
+          <button
             onClick={handleFundRewards}
             disabled={isFunding}
             className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isFunding ? 'Funding…' : 'Fund Reward Pool'}
-                </button>
-              </div>
+          </button>
+        </div>
       </header>
 
       <section className="grid gap-6 md:grid-cols-3">
@@ -239,7 +302,11 @@ export default function MerchantDashboard() {
           <p className="mt-3 text-4xl font-bold text-purple-100">{totals.pendingRewards}</p>
           <p className="mt-3 text-sm text-purple-100/80">Free drinks awaiting redemption.</p>
         </div>
-        <div className="rounded-3xl border border-blue-500/40 bg-blue-500/10 p-6 shadow-xl shadow-blue-900/40 backdrop-blur-2xl">
+        <div
+          className="rounded-3xl border border-blue-500/40 bg-blue-500/10 p-6 shadow-xl shadow-blue-900/40 backdrop-blur-2xl"
+          onDoubleClick={toggleTransferPanel}
+          title="Double-click to open advanced tools"
+        >
           <h3 className="text-xl font-semibold text-white">Contract Balance</h3>
           <p className="mt-3 text-3xl font-bold text-blue-100">
             {formatBWT(rewardPoolBalance)} {BREW_TOKEN_SYMBOL}
@@ -250,6 +317,55 @@ export default function MerchantDashboard() {
           </p>
         </div>
       </section>
+
+      {isTransferPanelVisible && (
+        <section className="rounded-3xl border border-blue-400/30 bg-blue-500/5 p-6 shadow-xl shadow-blue-900/30 backdrop-blur-2xl">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.4em] text-white/40">Advanced Owner Tools</p>
+              <h3 className="text-xl font-semibold text-white">Direct BrewToken Transfer</h3>
+              <p className="mt-2 text-sm text-slate-300">
+                Send an exact BrewToken amount from the owner wallet to any customer. Use responsibly—transactions are on-chain.
+              </p>
+            </div>
+          </div>
+          <form className="mt-6 grid gap-4 md:grid-cols-[2fr_1fr_auto]" onSubmit={handleTokenTransfer}>
+            <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-white/50">
+              Customer Wallet
+              <input
+                type="text"
+                value={transferWallet}
+                onChange={(event) => setTransferWallet(event.target.value.trim())}
+                placeholder="0x…"
+                className="mt-2 rounded-full border border-white/10 bg-black/40 px-4 py-2 text-sm text-white placeholder:text-white/30 focus:border-blue-300 focus:outline-none"
+                autoComplete="off"
+              />
+            </label>
+            <label className="flex flex-col text-xs uppercase tracking-[0.3em] text-white/50">
+              Amount ({BREW_TOKEN_SYMBOL})
+              <input
+                type="number"
+                min="0"
+                step="0.0001"
+                value={transferAmount}
+                onChange={(event) => setTransferAmount(event.target.value)}
+                placeholder="25"
+                className="mt-2 rounded-full border border-white/10 bg-black/40 px-4 py-2 text-sm text-white placeholder:text-white/30 focus:border-blue-300 focus:outline-none"
+                autoComplete="off"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="submit"
+                disabled={isTransferring}
+                className="w-full rounded-full border border-blue-400/40 px-6 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-blue-100 transition hover:border-blue-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isTransferring ? 'Sending…' : 'Send Tokens'}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 shadow-2xl shadow-indigo-900/30 backdrop-blur-2xl">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -284,28 +400,51 @@ export default function MerchantDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/10">
-                {customers.map((customer) => (
-                  <tr key={customer.wallet_address}>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-100">
-                      {customer.wallet_address.slice(0, 10)}…{customer.wallet_address.slice(-6)}
-                    </td>
-                    <td className="px-4 py-3">{customer.stamp_count}</td>
-                    <td className="px-4 py-3">{customer.pending_rewards}</td>
-                    <td className="px-4 py-3">{Number(customer.total_volume || 0).toFixed(2)}</td>
+                {customers.map((customer, index) => {
+                  const wallet =
+                    customer.wallet_address ||
+                    customer.customer_wallet ||
+                    customer.address ||
+                    null;
+                  const shortWallet = wallet
+                    ? `${wallet.slice(0, 10)}…${wallet.slice(-6)}`
+                    : 'Unknown';
+                  const stampCount = Number(customer.stamp_count || 0);
+                  const pendingRewards = Number(customer.pending_rewards || 0);
+                  const totalVolume = Number(customer.total_volume || 0);
+                  const lastActivity =
+                    customer.last_purchase_at ||
+                    customer.last_updated ||
+                    customer.updated_at ||
+                    null;
+                  const rowKey = wallet ? wallet.toLowerCase() : `customer-${index}`;
+
+                  return (
+                    <tr key={rowKey}>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-100">{shortWallet}</td>
+                      <td className="px-4 py-3">{stampCount}</td>
+                      <td className="px-4 py-3">{pendingRewards}</td>
+                      <td className="px-4 py-3">{totalVolume.toFixed(2)}</td>
                     <td className="px-4 py-3 text-xs text-slate-400">
-                      {customer.last_purchase_at ? new Date(customer.last_purchase_at).toLocaleString() : '—'}
+                        {lastActivity ? new Date(lastActivity).toLocaleString() : '—'}
                     </td>
                     <td className="px-4 py-3">
                 <button
-                        onClick={() => handleRedeemReward(customer.wallet_address)}
-                        disabled={customer.pending_rewards <= 0 || isFunding || loadingCustomers}
+                          onClick={() => wallet && handleRedeemReward(wallet)}
+                          disabled={
+                            !wallet ||
+                            pendingRewards <= 0 ||
+                            isFunding ||
+                            loadingCustomers
+                          }
                         className="rounded-full border border-emerald-400/40 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Redeem Reward
                 </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

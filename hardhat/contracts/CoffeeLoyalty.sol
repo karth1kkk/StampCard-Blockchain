@@ -54,12 +54,22 @@ contract CoffeeLoyalty is Ownable {
         _incrementStamps(customer);
     }
 
+    /**
+     * @notice Records a stamp for a customer after an off-chain payment confirmation.
+     * @dev Callable only by the contract owner (merchant) to keep stamp accounting authoritative.
+     */
+    function recordStamp(address customer) external onlyOwner {
+        require(customer != address(0), "Invalid customer");
+        _incrementStamps(customer);
+    }
+
     function redeemReward(address customer) external onlyOwner {
         require(customer != address(0), "Invalid customer");
         uint256 rewards = pendingRewards[customer];
         require(rewards > 0, "No rewards pending");
 
         pendingRewards[customer] = rewards - 1;
+        stampCount[customer] = 0;
 
         uint256 payout = rewardTokenAmount;
         if (payout > 0) {

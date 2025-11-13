@@ -360,6 +360,19 @@
         "type": "address"
       }
     ],
+    "name": "recordStamp",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "customer",
+        "type": "address"
+      }
+    ],
     "name": "redeemReward",
     "outputs": [],
     "stateMutability": "nonpayable",

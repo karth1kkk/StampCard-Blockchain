@@ -97,6 +97,23 @@ describe("CoffeeLoyalty", function () {
     });
   });
 
+  describe("recordStamp", function () {
+    it("increments stamps when called by owner", async function () {
+      const { owner, customer, coffeeLoyalty } = await loadFixture(deployFixture);
+      await expect(coffeeLoyalty.connect(owner).recordStamp(customer.address))
+        .to.emit(coffeeLoyalty, "StampAdded")
+        .withArgs(customer.address, 1, 0);
+      expect(await coffeeLoyalty.getStampCount(customer.address)).to.equal(1);
+    });
+
+    it("reverts when called by non owner", async function () {
+      const { customer, other, coffeeLoyalty } = await loadFixture(deployFixture);
+      await expect(
+        coffeeLoyalty.connect(other).recordStamp(customer.address)
+      ).to.be.revertedWithCustomError(coffeeLoyalty, "OwnableUnauthorizedAccount");
+    });
+  });
+
   describe("redeemReward", function () {
     it("processes pending rewards and pays out tokens", async function () {
       const { owner, customer, brewToken, coffeeLoyalty } = await loadFixture(deployFixture);
@@ -117,6 +134,7 @@ describe("CoffeeLoyalty", function () {
         .withArgs(customer.address, 0, DEFAULT_REWARD);
 
       expect(await coffeeLoyalty.getPendingRewards(customer.address)).to.equal(0);
+      expect(await coffeeLoyalty.getStampCount(customer.address)).to.equal(0);
       expect(await brewToken.balanceOf(customer.address)).to.equal(DEFAULT_REWARD);
     });
 

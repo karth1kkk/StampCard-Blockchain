@@ -1,0 +1,846 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { ethers } from 'ethers';
+import { toast } from 'react-toastify';
+import { AnimatePresence, motion } from 'framer-motion';
+import { COFFEE_MENU } from '../../constants/products';
+import QRModal from './QRModal';
+import CustomerList from './CustomerList';
+import { BREW_TOKEN_ABI } from '../../lib/contractABI';
+import {
+  BREW_TOKEN_SYMBOL,
+  MERCHANT_WALLET_ADDRESS,
+  STAMPS_PER_REWARD,
+  LOYALTY_CONTRACT_ADDRESS,
+} from '../../lib/constants';
+import { useWallet } from '../../context/WalletContext';
+import {
+  getPendingRewards,
+  getStampCount,
+  recordStampOnChain,
+  fundRewardsOnChain,
+} from '../../lib/web3';
+import { useInactivityTimer } from '../../hooks/useInactivityTimer';
+
+const QrScanner = dynamic(
+  () => import('@yudiel/react-qr-scanner').then((mod) => mod.QrScanner),
+  { ssr: false }
+);
+
+const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_TOKEN_ADDRESS || '';
+const CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID || '';
+
+const formatCurrency = (value) => {
+  const numeric = Number(value || 0);
+  if (Number.isNaN(numeric)) {
+    return '0.00';
+  }
+  return numeric.toFixed(2);
+};
+
+const normaliseAddress = (value) => (value || '').trim().toLowerCase();
+const shortenAddress = (value) =>
+  value ? `${value.slice(0, 6)}…${value.slice(-4)}` : '';
+
+export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
+  const {
+    provider,
+    customerSigner,
+    ensureCorrectNetwork,
+    isCorrectNetwork,
+    isOwner,
+    isConnecting,
+    customerAddress,
+    connectCustomerWallet,
+    disconnectCustomerWallet,
+  } = useWallet();
+  const [quantities, setQuantities] = useState({});
+  const [customerWallet, setCustomerWallet] = useState('');
+  const [customerWalletSynced, setCustomerWalletSynced] = useState(true);
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [isQRVisible, setIsQRVisible] = useState(false);
+  const [qrValue, setQrValue] = useState('');
+  const [isWatchingPayment, setIsWatchingPayment] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState(null);
+  const [lastTxHash, setLastTxHash] = useState('');
+  const [lastBlockNumber, setLastBlockNumber] = useState(null);
+  const [processingStamp, setProcessingStamp] = useState(false);
+  const [sessionTimedOut, setSessionTimedOut] = useState(false);
+  const [orderHistoryRefreshToken, setOrderHistoryRefreshToken] = useState(0);
+  const [isCustomerPanelOpen, setIsCustomerPanelOpen] = useState(false);
+  const [now, setNow] = useState(() => new Date());
+  const [isFunding, setIsFunding] = useState(false);
+  const [detectedTxHash, setDetectedTxHash] = useState('');
+  const paymentWatcherRef = useRef(null);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+
+  const handleConnectMerchant = useCallback(async () => {
+    try {
+      await connectCustomerWallet();
+      toast.success('Merchant wallet connected.');
+    } catch (error) {
+      console.error('Merchant wallet connection failed:', error);
+      toast.error(error?.message || 'Unable to connect wallet.');
+    }
+  }, [connectCustomerWallet]);
+
+  const handleDisconnectMerchant = useCallback(() => {
+    disconnectCustomerWallet();
+    toast.info('Merchant wallet disconnected.');
+  }, [disconnectCustomerWallet]);
+
+  useInactivityTimer({
+    timeoutMs: 2 * 60 * 1000,
+    onTimeout: () => {
+      setSessionTimedOut(true);
+      if (typeof onSessionExpired === 'function') {
+        onSessionExpired();
+      }
+    },
+    isEnabled: Boolean(session),
+  });
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+const merchantContractAddress = useMemo(() => {
+  const raw = MERCHANT_WALLET_ADDRESS || LOYALTY_CONTRACT_ADDRESS;
+  if (!raw) {
+    return '';
+  }
+  try {
+    return ethers.getAddress(raw);
+  } catch (error) {
+    return raw;
+  }
+}, []);
+
+  const orderItems = useMemo(() => {
+    return Object.entries(quantities)
+      .map(([productId, quantity]) => {
+        const product = COFFEE_MENU.find((item) => item.id === productId);
+        if (!product || quantity <= 0) {
+          return null;
+        }
+        return {
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          quantity,
+        };
+      })
+      .filter(Boolean);
+  }, [quantities]);
+
+  const orderSummary = useMemo(() => {
+    const totalWei = orderItems.reduce((acc, item) => {
+      const priceWei = ethers.parseUnits(item.price, 18);
+      return acc + priceWei * BigInt(item.quantity);
+    }, 0n);
+    const totalBwt = ethers.formatUnits(totalWei, 18);
+    return {
+      totalWei,
+      totalBwt,
+      displayTotal: formatCurrency(totalBwt),
+      itemCount: orderItems.reduce((acc, item) => acc + item.quantity, 0),
+    };
+  }, [orderItems]);
+
+  const resetOrder = useCallback(() => {
+    setQuantities({});
+    setPendingOrder(null);
+    setIsWatchingPayment(false);
+    setLastTxHash('');
+    setLastBlockNumber(null);
+  }, []);
+
+  const updateQuantity = useCallback((productId, delta) => {
+    setQuantities((prev) => {
+      const nextQuantity = Math.max((prev[productId] || 0) + delta, 0);
+      if (nextQuantity === 0) {
+        const { [productId]: _removed, ...rest } = prev;
+        return rest;
+      }
+      return {
+        ...prev,
+        [productId]: nextQuantity,
+      };
+    });
+  }, []);
+
+  const sanitizedCustomerWallet = useMemo(() => customerWallet.trim(), [customerWallet]);
+
+  useEffect(() => {
+    if (!customerAddress) {
+      setCustomerWallet('');
+      setCustomerWalletSynced(true);
+      return;
+    }
+    if (customerWalletSynced) {
+      setCustomerWallet(customerAddress);
+    }
+  }, [customerAddress, customerWalletSynced]);
+
+  const canCreateQr =
+    orderSummary.totalWei > 0n &&
+    sanitizedCustomerWallet &&
+    ethers.isAddress(sanitizedCustomerWallet);
+
+  const handleGenerateQr = useCallback(() => {
+    const paymentRecipient = LOYALTY_CONTRACT_ADDRESS || MERCHANT_WALLET_ADDRESS;
+    if (!TOKEN_ADDRESS || !paymentRecipient) {
+      toast.error('Token or CoffeeLoyalty contract address is not configured.');
+      return;
+    }
+    if (!canCreateQr) {
+      toast.error('Select at least one item and provide a valid customer wallet.');
+      return;
+    }
+    const amountWei = orderSummary.totalWei.toString();
+    const chainSegment = CHAIN_ID ? `@${CHAIN_ID}` : '';
+    const payload = `ethereum:${TOKEN_ADDRESS}${chainSegment}/transfer?address=${paymentRecipient}&uint256=${amountWei}`;
+    setQrValue(payload);
+    setIsQRVisible(true);
+    setPendingOrder({
+      totalWei: orderSummary.totalWei,
+      totalBwt: orderSummary.totalBwt,
+      items: orderItems,
+      customerWallet: sanitizedCustomerWallet,
+      customerEmail: customerEmail.trim() || null,
+    });
+    toast.info('QR ready. Awaiting customer payment…');
+  }, [canCreateQr, sanitizedCustomerWallet, customerEmail, orderItems, orderSummary]);
+
+  const notifyReward = useCallback(async (email, wallet) => {
+    if (!email) {
+      return;
+    }
+    try {
+      await fetch('/api/rewards/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, wallet }),
+      });
+      toast.info(`Reward email sent to ${email}.`);
+    } catch (error) {
+      console.warn('Reward notification failed:', error);
+    }
+  }, []);
+
+  const handlePaymentConfirmed = useCallback(
+    async ({ transactionHash, blockNumber }) => {
+      if (!pendingOrder || !transactionHash) {
+        return;
+      }
+      if (!customerSigner) {
+        toast.error('Connect the merchant wallet in MetaMask to record the stamp.');
+        return;
+      }
+      if (!isOwner) {
+        toast.error('Connected wallet is not authorised to record stamps.');
+        return;
+      }
+      try {
+        if (!isCorrectNetwork) {
+          await ensureCorrectNetwork();
+        }
+        setProcessingStamp(true);
+        await recordStampOnChain(pendingOrder.customerWallet, customerSigner);
+        const [stampCount, pendingRewards] = await Promise.all([
+          getStampCount(pendingOrder.customerWallet, customerSigner.provider),
+          getPendingRewards(pendingOrder.customerWallet, customerSigner.provider),
+        ]);
+
+        const response = await fetch('/api/stamps', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token || ''}`,
+          },
+          body: JSON.stringify({
+            address: pendingOrder.customerWallet,
+            email: pendingOrder.customerEmail,
+            totalBWT: pendingOrder.totalBwt,
+            items: pendingOrder.items,
+            txHash: transactionHash,
+            blockNumber,
+            rewardThreshold: STAMPS_PER_REWARD,
+            stampsAwarded: 1,
+            pendingRewards,
+            stampCount,
+            merchantEmail: session?.user?.email || null,
+            status: 'PAID',
+            metadata: { source: 'pos-dashboard' },
+          }),
+        });
+
+        const payload = response.ok ? await response.json() : null;
+
+        toast.success('Stamp recorded successfully.');
+        setOrderHistoryRefreshToken((token) => token + 1);
+        resetOrder();
+
+        if (!payload?.rewardEligible && pendingRewards > 0) {
+          payload.rewardEligible = true;
+        }
+
+        if (payload?.rewardEligible) {
+          await notifyReward(payload.email, pendingOrder.customerWallet);
+        }
+      } catch (error) {
+        console.error('Recording stamp failed:', error);
+        const message =
+          error?.shortMessage ||
+          error?.reason ||
+          error?.message ||
+          'Unable to record stamp.';
+        toast.error(message);
+      } finally {
+        setProcessingStamp(false);
+      }
+    },
+    [
+      customerSigner,
+      ensureCorrectNetwork,
+      isCorrectNetwork,
+      isOwner,
+      pendingOrder,
+      resetOrder,
+      session?.access_token,
+      session?.user?.email,
+      notifyReward,
+    ]
+  );
+
+  const handleSessionModalClose = useCallback(() => {
+    setSessionTimedOut(false);
+    resetOrder();
+  }, [resetOrder]);
+
+  useEffect(() => {
+    if (!isQRVisible || !pendingOrder || !provider || !TOKEN_ADDRESS) {
+      return () => {};
+    }
+
+    const tokenContract = new ethers.Contract(TOKEN_ADDRESS, BREW_TOKEN_ABI, provider);
+    const targetAmount = pendingOrder.totalWei;
+    const targetCustomer = normaliseAddress(pendingOrder.customerWallet);
+    const targetMerchant =
+      LOYALTY_CONTRACT_ADDRESS || MERCHANT_WALLET_ADDRESS || null;
+    if (!targetMerchant) {
+      console.warn('No CoffeeLoyalty contract address configured. Transfer watcher disabled.');
+      return () => {};
+    }
+
+    const handler = (from, to, value, event) => {
+      if (!event?.transactionHash) {
+        return;
+      }
+      if (normaliseAddress(to) !== targetMerchant) {
+        return;
+      }
+      if (targetCustomer && normaliseAddress(from) !== targetCustomer) {
+        return;
+      }
+      if (value !== targetAmount) {
+        return;
+      }
+
+      toast.success('Payment detected on-chain. Recording stamp…');
+      setIsQRVisible(false);
+      setIsWatchingPayment(false);
+      setLastTxHash(event.transactionHash);
+      setLastBlockNumber(event.blockNumber ?? null);
+      handlePaymentConfirmed({
+        transactionHash: event.transactionHash,
+        blockNumber: event.blockNumber ?? null,
+        from: normaliseAddress(from),
+      });
+      tokenContract.off('Transfer', handler);
+    };
+
+    tokenContract.on('Transfer', handler);
+    paymentWatcherRef.current = () => {
+      tokenContract.off('Transfer', handler);
+    };
+    setIsWatchingPayment(true);
+
+    return () => {
+      tokenContract.off('Transfer', handler);
+      paymentWatcherRef.current = null;
+    };
+  }, [handlePaymentConfirmed, isQRVisible, pendingOrder, provider]);
+
+  useEffect(() => {
+    return () => {
+      if (paymentWatcherRef.current) {
+        paymentWatcherRef.current();
+      }
+    };
+  }, []);
+
+  const handleFundRewards = useCallback(async () => {
+    if (!customerSigner) {
+      toast.error('Connect the owner wallet first.');
+      return;
+    }
+    if (!isOwner) {
+      toast.error('Connected wallet is not the CoffeeLoyalty owner.');
+      return;
+    }
+    const amountInput = typeof window !== 'undefined' ? window.prompt('Amount of BWT to add to the reward pool:', '100') : null;
+    if (!amountInput) {
+      return;
+    }
+    try {
+      if (!isCorrectNetwork) {
+        await ensureCorrectNetwork();
+      }
+      setIsFunding(true);
+      const amountWei = ethers.parseUnits(amountInput, 18);
+      const { hash } = await fundRewardsOnChain(amountWei, customerSigner);
+      toast.success(`Reward pool funded · tx ${hash.slice(0, 10)}…`);
+    } catch (error) {
+      console.error('Funding reward pool failed:', error);
+      const message =
+        error?.shortMessage ||
+        error?.reason ||
+        error?.message ||
+        'Funding reward pool failed.';
+      toast.error(message);
+    } finally {
+      setIsFunding(false);
+    }
+  }, [customerSigner, ensureCorrectNetwork, isCorrectNetwork, isOwner]);
+
+  const headerTime = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-slate-950 text-white">
+      <aside className="hidden w-[300px] flex-col border-r border-white/5 bg-white/[0.02] px-6 py-6 shadow-xl shadow-black/40 lg:flex">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.45em] text-white/40">BrewToken POS</p>
+          <h1 className="mt-3 text-2xl font-semibold text-white">Coffee Bar</h1>
+          <p className="mt-2 text-xs text-slate-300">
+            Process BrewToken orders, accept mobile payments, and issue loyalty stamps from one screen.
+          </p>
+        </div>
+
+        <div className="mt-8 space-y-4 rounded-3xl border border-white/10 bg-black/30 p-5">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.35em] text-white/40">Merchant session</p>
+            <p className="mt-2 font-mono text-sm text-emerald-200">{session?.user?.email || '—'}</p>
+            <p className="mt-1 text-[10px] uppercase tracking-[0.4em] text-emerald-200/70">
+              Auto logout after 2 min idle
+            </p>
+          </div>
+          <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Connected wallet</p>
+            {merchantContractAddress ? (
+              <p className="font-mono text-xs text-emerald-200">
+                {shortenAddress(merchantContractAddress)}
+              </p>
+            ) : (
+              <p className="text-xs text-red-200">Contract address not configured.</p>
+            )}
+          </div>
+          <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Operator wallet</p>
+            {customerAddress ? (
+              <>
+                <p className="font-mono text-xs text-slate-100">{shortenAddress(customerAddress)}</p>
+                <p className="text-[10px] uppercase tracking-[0.4em] text-emerald-200/80">
+                  {isOwner ? 'Owner verified' : 'Not contract owner'}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-300">
+                Connect the owner wallet to redeem rewards and fund the pool.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={handleConnectMerchant}
+              disabled={isConnecting}
+              className="mt-3 w-full rounded-full border border-emerald-300/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isConnecting
+                ? 'Connecting…'
+                : customerAddress
+                ? 'Refresh Wallet'
+                : 'Connect Wallet'}
+            </button>
+            {customerAddress ? (
+              <button
+                type="button"
+                onClick={handleDisconnectMerchant}
+                className="mt-2 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+              >
+                Disconnect
+              </button>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsCustomerPanelOpen(true)}
+            className="w-full rounded-3xl border border-white/10 bg-white/[0.08] px-4 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/90 transition hover:border-emerald-200 hover:bg-emerald-400/10"
+          >
+            Customer Directory
+          </button>
+        </div>
+      </aside>
+
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 bg-white/[0.03] px-6 py-4 shadow-lg shadow-black/30">
+          <div className="flex items-center gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.45em] text-white/40">Live orders</p>
+              <h2 className="text-3xl font-semibold text-white">Counter</h2>
+            </div>
+            <div className="hidden sm:flex sm:flex-col">
+              <span className="text-xs uppercase tracking-[0.35em] text-white/40">Local time</span>
+              <span className="text-lg font-semibold text-white">{headerTime}</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsCustomerPanelOpen(true)}
+              className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
+            >
+              Customers
+            </button>
+            <button
+              type="button"
+              onClick={handleFundRewards}
+              disabled={isConnecting || isFunding}
+              className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isFunding ? 'Funding…' : 'Fund Pool'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                resetOrder();
+                connectCustomerWallet().catch(() => {});
+              }}
+              className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
+            >
+              Refresh Wallet
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof onSignOut === 'function') {
+                  onSignOut();
+                }
+              }}
+              className="rounded-full border border-red-400/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-red-100 transition hover:border-red-300 hover:text-white"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+
+        <div className="flex flex-1 overflow-hidden">
+          <section className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.45em] text-white/40">Menu</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Coffee selection</h3>
+              </div>
+              <div className="rounded-full border border-white/10 px-4 py-1 text-xs uppercase tracking-[0.35em] text-white/70">
+                {orderSummary.itemCount} item(s)
+              </div>
+            </div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {COFFEE_MENU.map((item) => {
+                const quantity = quantities[item.id] || 0;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => updateQuantity(item.id, 1)}
+                    className="group relative flex h-full flex-col justify-between overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-950 to-black p-6 text-left transition hover:border-emerald-300/60 hover:shadow-lg hover:shadow-emerald-500/20"
+                  >
+                    <div className="absolute inset-0 -z-10 bg-gradient-to-br from-emerald-400/0 via-emerald-400/10 to-sky-400/0 opacity-0 transition group-hover:opacity-100" />
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Add to order</p>
+                      <h3 className="mt-3 text-lg font-semibold text-white">{item.name}</h3>
+                      <p className="mt-2 text-sm text-slate-300">{item.description}</p>
+                    </div>
+                    <div className="mt-6 flex items-center justify-between text-sm text-emerald-200">
+                      <span>{item.price} {BREW_TOKEN_SYMBOL}</span>
+                      {quantity > 0 ? (
+                        <span className="rounded-full bg-emerald-400/20 px-3 py-1 text-xs font-semibold text-emerald-100">
+                          x{quantity}
+                        </span>
+                      ) : (
+                        <span className="text-xs uppercase tracking-[0.35em] text-emerald-100/70">
+                          tap to add
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="flex w-full max-w-md flex-col border-l border-white/5 bg-white/[0.03] px-6 py-6 shadow-[-20px_0_40px_rgba(10,10,20,0.35)]">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.4em] text-white/40">Current order</p>
+              <h3 className="mt-2 text-xl font-semibold text-white">Summary</h3>
+            </div>
+
+            <div className="mt-5 flex-1 overflow-y-auto">
+              {orderItems.length === 0 ? (
+                <p className="text-sm text-slate-300">Select drinks to start building the order.</p>
+              ) : (
+                <div className="space-y-3">
+                  {orderItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-slate-200"
+                    >
+                      <div>
+                        <p className="font-semibold text-white">{item.name}</p>
+                        <p className="text-xs text-slate-400">
+                          {item.price} {BREW_TOKEN_SYMBOL} · Qty {item.quantity}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                          onClick={() => updateQuantity(item.id, -1)}
+                        >
+                          −
+                        </button>
+                        <span className="text-lg font-semibold text-white">{item.quantity}</span>
+                        <button
+                          type="button"
+                          className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                          onClick={() => updateQuantity(item.id, 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 space-y-4 border-t border-white/10 pt-4 text-sm text-slate-200">
+              <label className="block text-[10px] font-semibold uppercase tracking-[0.35em] text-white/50">
+                Customer Wallet
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={customerWallet}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setCustomerWallet(next);
+                      if (customerAddress && next.trim() !== customerAddress) {
+                        setCustomerWalletSynced(false);
+                      } else {
+                        setCustomerWalletSynced(true);
+                      }
+                    }}
+                    placeholder="0x…"
+                    className="flex-1 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-300/70 focus:ring-1 focus:ring-emerald-300/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setIsScannerOpen(true)}
+                    className="rounded-2xl border border-white/15 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-emerald-200 hover:text-white"
+                  >
+                    Scan QR
+                  </button>
+                </div>
+              </label>
+              <label className="block text-[10px] font-semibold uppercase tracking-[0.35em] text-white/50">
+                Customer Email (optional)
+                <input
+                  value={customerEmail}
+                  onChange={(event) => setCustomerEmail(event.target.value)}
+                  placeholder="customer@example.com"
+                  className="mt-2 w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-300/70 focus:ring-1 focus:ring-emerald-300/50"
+                />
+              </label>
+            </div>
+
+            <div className="mt-6 space-y-3 border-t border-white/10 pt-4">
+              <div className="flex items-center justify-between text-xs uppercase tracking-[0.35em] text-white/50">
+                <span>Total ({BREW_TOKEN_SYMBOL})</span>
+                <span className="text-3xl font-semibold text-white">{orderSummary.displayTotal}</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerateQr}
+                disabled={!canCreateQr || processingStamp || isConnecting || isWatchingPayment}
+                className="w-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white shadow-lg shadow-indigo-500/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isWatchingPayment
+                  ? 'Awaiting Payment…'
+                  : processingStamp
+                  ? 'Recording Stamp…'
+                  : 'Generate Payment QR'}
+              </button>
+              <button
+                type="button"
+                onClick={resetOrder}
+                className="w-full rounded-full border border-white/15 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/30 hover:text-white"
+              >
+                Clear Order
+              </button>
+            </div>
+
+            {lastTxHash ? (
+              <div className="mt-6 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-xs text-emerald-100">
+                <p className="font-semibold uppercase tracking-[0.3em]">Last payment</p>
+                <p className="mt-2 font-mono text-sm">
+                  Tx: {lastTxHash.slice(0, 10)}…{lastTxHash.slice(-8)}
+                </p>
+                {lastBlockNumber ? (
+                  <p className="mt-1 text-xs text-emerald-200/80">Block #{lastBlockNumber}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {isCustomerPanelOpen ? (
+          <motion.div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 px-4 py-6 backdrop-blur"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="relative w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/40"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <button
+                type="button"
+                onClick={() => setIsCustomerPanelOpen(false)}
+                className="absolute right-6 top-6 rounded-full border border-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
+              >
+                Close
+              </button>
+              <CustomerList
+                key={orderHistoryRefreshToken}
+                accessToken={session?.access_token}
+                onRefreshRequested={() => setOrderHistoryRefreshToken((token) => token + 1)}
+              />
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <QRModal
+        isOpen={isQRVisible}
+        onClose={() => setIsQRVisible(false)}
+        payload={qrValue}
+        totalBwt={orderSummary.displayTotal}
+        customerWallet={sanitizedCustomerWallet}
+      />
+      <AnimatePresence>
+        {isScannerOpen ? (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 px-4 py-6 backdrop-blur"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-full max-w-md rounded-3xl border border-white/10 bg-slate-900/95 p-6 shadow-2xl shadow-black/50"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <div className="space-y-4 text-sm text-slate-200">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">
+                      Scan customer wallet
+                    </p>
+                    <h3 className="mt-2 text-xl font-semibold text-white">MetaMask QR</h3>
+                    <p className="mt-2 text-xs text-slate-300">
+                      Point the camera at the customer’s MetaMask QR code to capture their wallet address instantly.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsScannerOpen(false)}
+                    className="rounded-full border border-white/20 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-white/60 transition hover:border-white/40 hover:text-white"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/50">
+                  <QrScanner
+                    onDecode={(result) => {
+                      const text = typeof result === 'string' ? result : result?.text || result?.rawValue || '';
+                      const match = text.match(/0x[a-fA-F0-9]{40}/);
+                      if (!match) {
+                        return;
+                      }
+                      try {
+                        const checksum = ethers.getAddress(match[0]);
+                        setCustomerWallet(checksum);
+                        setCustomerWalletSynced(false);
+                        toast.success(`Detected wallet ${shortenAddress(checksum)}`);
+                        setIsScannerOpen(false);
+                      } catch (error) {
+                        toast.error('Scanned QR does not contain a valid wallet address.');
+                      }
+                    }}
+                    onError={(error) => console.warn('QR scan error:', error?.message || error)}
+                    containerStyle={{ paddingBottom: '0', height: '280px' }}
+                    videoStyle={{ borderRadius: '16px' }}
+                  />
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {sessionTimedOut ? (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 px-4 py-6 backdrop-blur"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/90 p-8 shadow-2xl shadow-black/40"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <h2 className="text-2xl font-semibold text-white">Session expired</h2>
+              <p className="mt-3 text-sm text-slate-300">
+                You were signed out after 2 minutes of inactivity. Please log in again to continue using the POS.
+              </p>
+              <button
+                type="button"
+                onClick={handleSessionModalClose}
+                className="mt-6 w-full rounded-full border border-white/10 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
+              >
+                Close
+              </button>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+}

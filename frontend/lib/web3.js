@@ -148,7 +148,21 @@ export const approveTokenSpending = async (spender, amount, signer) => {
     throw new Error('Spender address is required.');
   }
   const token = getTokenContract(signer);
-  const tx = await token.approve(spender, amount);
+  const overrides = {};
+  try {
+    const estimatedGas = await token.approve.estimateGas(spender, amount);
+    if (typeof estimatedGas === 'bigint') {
+      const buffer = estimatedGas / 5n;
+      const minBuffer = buffer > 0n ? buffer : 10_000n;
+      overrides.gasLimit = estimatedGas + minBuffer;
+    }
+  } catch (error) {
+    console.warn('Unable to estimate gas for approve. Proceeding without override.', error);
+  }
+  if (!overrides.gasLimit) {
+    overrides.gasLimit = 120_000n;
+  }
+  const tx = await token.approve(spender, amount, overrides);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
@@ -158,7 +172,20 @@ export const buyCoffee = async ({ customerAddress, priceWei }, signer) => {
     throw new Error('Wallet signer is not available.');
   }
   const contract = getLoyaltyContract(signer);
-  const tx = await contract.buyCoffee(customerAddress, priceWei);
+  const overrides = {};
+  try {
+    const estimatedGas = await contract.buyCoffee.estimateGas(customerAddress, priceWei);
+    if (typeof estimatedGas === 'bigint') {
+      const increased = (estimatedGas * 3n) / 2n;
+      overrides.gasLimit = increased > 120_000n ? increased : 120_000n;
+    }
+  } catch (error) {
+    console.warn('Unable to estimate gas for buyCoffee. Proceeding without override.', error);
+  }
+  if (!overrides.gasLimit) {
+    overrides.gasLimit = 120_000n;
+  }
+  const tx = await contract.buyCoffee(customerAddress, priceWei, overrides);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
@@ -169,6 +196,19 @@ export const redeemRewardOnChain = async (customerAddress, signer) => {
   }
   const contract = getLoyaltyContract(signer);
   const tx = await contract.redeemReward(customerAddress);
+  const receipt = await tx.wait();
+  return { hash: tx.hash, receipt };
+};
+
+export const recordStampOnChain = async (customerAddress, signer) => {
+  if (!signer) {
+    throw new Error('Wallet signer is not available.');
+  }
+  if (!customerAddress) {
+    throw new Error('Customer address is required to record a stamp.');
+  }
+  const contract = getLoyaltyContract(signer);
+  const tx = await contract.recordStamp(customerAddress);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
@@ -189,6 +229,22 @@ export const withdrawRewardsOnChain = async (to, amountWei, signer) => {
   }
   const contract = getLoyaltyContract(signer);
   const tx = await contract.withdrawRewards(to, amountWei);
+  const receipt = await tx.wait();
+  return { hash: tx.hash, receipt };
+};
+
+export const transferTokensOnChain = async ({ to, amountWei }, signer) => {
+  if (!signer) {
+    throw new Error('Wallet signer is not available.');
+  }
+  if (!to) {
+    throw new Error('Recipient address is required.');
+  }
+  if (!amountWei || amountWei <= 0n) {
+    throw new Error('Transfer amount must be greater than zero.');
+  }
+  const token = getTokenContract(signer);
+  const tx = await token.transfer(to, amountWei);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };

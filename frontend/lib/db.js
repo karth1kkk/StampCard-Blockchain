@@ -29,6 +29,10 @@ const parseNumeric = (value) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const isMissingColumn = (error) => error?.code === '42703';
+const isMissingRelation = (error) => error?.code === '42P01' || error?.code === 'PGRST201' || error?.code === 'PGRST301';
+const shouldUseLegacySchema = (error) => isMissingColumn(error) || isMissingRelation(error);
+
 export const getCustomerSummary = async (address) => {
   const client = requireSupabase();
   const wallet = normaliseAddress(address);
@@ -36,55 +40,154 @@ export const getCustomerSummary = async (address) => {
     throw new Error('wallet address required');
   }
 
+  const base = {
+    wallet_address: wallet,
+    stamp_count: 0,
+    pending_rewards: 0,
+    reward_eligible: false,
+    lifetime_stamps: 0,
+    reward_threshold: DEFAULT_REWARD_THRESHOLD,
+    last_updated: null,
+    email: null,
+  };
+
+  try {
   const { data, error } = await client
-    .from('customers')
-    .select('wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, created_at, updated_at')
-    .eq('wallet_address', wallet)
+      .from('stamps')
+      .select(
+        'customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold, customers!inner(email)'
+      )
+      .eq('customer_wallet', wallet)
     .maybeSingle();
 
   if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    if (!data) {
+      return base;
+    }
+
+    return {
+      wallet_address: wallet,
+      stamp_count: Number(data.stamp_count || 0),
+      pending_rewards: Number(data.pending_rewards || 0),
+      reward_eligible: Boolean(data.reward_eligible) || Number(data.pending_rewards || 0) > 0,
+      lifetime_stamps: Number(data.lifetime_stamps || 0),
+      reward_threshold: Number(data.reward_threshold || DEFAULT_REWARD_THRESHOLD),
+      last_updated: data.last_updated || null,
+      email: data.customers?.email || null,
+    };
+  } catch (error) {
+    if (!shouldUseLegacySchema(error)) {
     console.error('Error fetching customer summary:', error);
     throw error;
   }
 
-  return (
-    data || {
-      wallet_address: wallet,
-      stamp_count: 0,
-      pending_rewards: 0,
-      total_volume: 0,
-      last_purchase_at: null,
+    const { data: legacy, error: legacyError } = await client
+      .from('customers')
+      .select('wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, updated_at')
+      .eq('wallet_address', wallet)
+      .maybeSingle();
+
+    if (legacyError && legacyError.code !== 'PGRST116') {
+      console.error('Legacy customer summary error:', legacyError);
+      throw legacyError;
     }
-  );
+
+    if (!legacy) {
+      return base;
+    }
+
+    return {
+      wallet_address: wallet,
+      stamp_count: Number(legacy.stamp_count || 0),
+      pending_rewards: Number(legacy.pending_rewards || 0),
+      reward_eligible: Number(legacy.pending_rewards || 0) > 0,
+      lifetime_stamps: Number(legacy.stamp_count || 0),
+      reward_threshold: DEFAULT_REWARD_THRESHOLD,
+      last_updated: legacy.updated_at || legacy.last_purchase_at || null,
+      email: null,
+    };
+  }
 };
 
 export const listCustomers = async () => {
   const client = requireSupabase();
+  try {
   const { data, error } = await client
+      .from('stamps')
+      .select(
+        'customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold, customers!inner(email)'
+      )
+      .order('last_updated', { ascending: false })
+      .limit(250);
+
+    if (error) {
+      throw error;
+    }
+
+    return (
+      data?.map((row) => ({
+        customer_wallet: row.customer_wallet,
+        stamp_count: Number(row.stamp_count || 0),
+        pending_rewards: Number(row.pending_rewards || 0),
+        reward_eligible: Boolean(row.reward_eligible) || Number(row.pending_rewards || 0) > 0,
+        last_updated: row.last_updated,
+        lifetime_stamps: Number(row.lifetime_stamps || 0),
+        reward_threshold: Number(row.reward_threshold || DEFAULT_REWARD_THRESHOLD),
+        email: row.customers?.email || null,
+      })) || []
+    );
+  } catch (error) {
+    if (!shouldUseLegacySchema(error)) {
+      console.error('Error listing customers:', error);
+      throw error;
+    }
+
+    const { data, error: legacyError } = await client
     .from('customers')
     .select('wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, updated_at, created_at')
     .order('updated_at', { ascending: false })
     .limit(250);
 
-  if (error) {
-    console.error('Error listing customers:', error);
-    throw error;
+    if (legacyError) {
+      console.error('Legacy customer list error:', legacyError);
+      throw legacyError;
   }
 
-  return data || [];
+    return (
+      data?.map((row) => ({
+        customer_wallet: row.wallet_address,
+        stamp_count: Number(row.stamp_count || 0),
+        pending_rewards: Number(row.pending_rewards || 0),
+        reward_eligible: Number(row.pending_rewards || 0) > 0,
+        last_updated: row.updated_at || row.last_purchase_at,
+        lifetime_stamps: Number(row.stamp_count || 0),
+        reward_threshold: DEFAULT_REWARD_THRESHOLD,
+        email: null,
+      })) || []
+    );
+  }
 };
 
 export const recordPurchase = async ({
   walletAddress,
+  email,
+  totalBWT,
+  items,
+  txHash,
+  blockNumber,
+  status = 'PAID',
+  merchantEmail,
+  rewardThreshold = DEFAULT_REWARD_THRESHOLD,
+  stampsAwarded = 1,
+  pendingRewards,
+  stampCount,
   productId,
   productName,
   priceBWT,
-  txHash,
-  blockNumber,
-  outletId,
   metadata,
-  rewardThreshold = DEFAULT_REWARD_THRESHOLD,
-  stampsAwarded = 1,
 }) => {
   const client = requireSupabase();
   const wallet = normaliseAddress(walletAddress);
@@ -96,17 +199,188 @@ export const recordPurchase = async ({
   }
 
   const now = new Date().toISOString();
-  const price = parseNumeric(priceBWT);
+  const threshold = Number(rewardThreshold) || DEFAULT_REWARD_THRESHOLD;
+
+  const normalisedItems =
+    Array.isArray(items) && items.length > 0
+      ? items.map((item) => ({
+          id: item.id || item.productId || null,
+          name: item.name || item.productName || null,
+          price: parseNumeric(item.price ?? item.priceBWT ?? 0),
+          quantity: Number(item.quantity ?? item.qty ?? 1),
+        }))
+      : productId
+      ? [
+          {
+            id: productId,
+            name: productName || productId,
+            price: parseNumeric(priceBWT),
+            quantity: Number(stampsAwarded || 1),
+          },
+        ]
+      : [];
+
+  const computedTotal = normalisedItems.reduce(
+    (acc, item) => acc + item.price * (item.quantity || 1),
+    0
+  );
+  let totalBwtNumeric = parseNumeric(totalBWT);
+  if (totalBwtNumeric <= 0 && computedTotal > 0) {
+    totalBwtNumeric = computedTotal;
+  }
+  if (totalBwtNumeric <= 0) {
+    totalBwtNumeric = parseNumeric(priceBWT);
+  }
+
+  try {
+    const customerPayload = {
+      wallet_address: wallet,
+      updated_at: now,
+    };
+    if (email) {
+      customerPayload.email = String(email).trim().toLowerCase();
+    }
+
+    const { error: customerError } = await client
+      .from('customers')
+      .upsert(customerPayload, { onConflict: 'wallet_address' });
+
+    if (customerError) {
+      throw customerError;
+    }
+
+    const { data: existingStamp, error: stampFetchError } = await client
+      .from('stamps')
+      .select('stamp_count, pending_rewards, lifetime_stamps, reward_threshold, reward_eligible, last_order_id')
+      .eq('customer_wallet', wallet)
+      .maybeSingle();
+
+    if (stampFetchError && stampFetchError.code !== 'PGRST116') {
+      throw stampFetchError;
+    }
+
+    const lifetimeStamps =
+      Number(existingStamp?.lifetime_stamps || 0) + Number(stampsAwarded || 1);
+
+    let nextStampCount =
+      stampCount !== undefined && stampCount !== null
+        ? Number(stampCount)
+        : Number(existingStamp?.stamp_count || 0) + Number(stampsAwarded || 1);
+
+    let nextPendingRewards =
+      pendingRewards !== undefined && pendingRewards !== null
+        ? Number(pendingRewards)
+        : Number(existingStamp?.pending_rewards || 0);
+
+    if (pendingRewards === undefined && stampCount === undefined) {
+      while (nextStampCount >= threshold) {
+        nextStampCount -= threshold;
+        nextPendingRewards += 1;
+      }
+    }
+
+    const rewardEligible = nextPendingRewards > 0 || nextStampCount >= threshold;
+
+    const orderPayload = {
+      customer_wallet: wallet,
+      items: normalisedItems,
+      total_bwt: totalBwtNumeric,
+      tx_hash: txHash,
+      block_number: blockNumber || null,
+      status,
+      merchant_email: merchantEmail || null,
+      metadata: metadata || null,
+      created_at: now,
+    };
+
+    let orderRecord = null;
+    const { data: insertedOrder, error: orderError } = await client
+      .from('orders')
+      .insert(orderPayload)
+      .select()
+      .maybeSingle();
+
+    if (orderError && orderError.code !== '23505') {
+      throw orderError;
+    }
+    if (!orderError) {
+      orderRecord = insertedOrder;
+    }
+
+    const stampPayload = {
+      customer_wallet: wallet,
+      stamp_count: nextStampCount,
+      pending_rewards: nextPendingRewards,
+      reward_eligible: rewardEligible,
+      last_updated: now,
+      lifetime_stamps: lifetimeStamps,
+      reward_threshold: threshold,
+      last_order_id: orderRecord?.id || existingStamp?.last_order_id || null,
+    };
+
+    const { error: stampError } = await client
+      .from('stamps')
+      .upsert(stampPayload, { onConflict: 'customer_wallet' });
+
+    if (stampError) {
+      throw stampError;
+    }
+
+    return {
+      wallet_address: wallet,
+      stamp_count: nextStampCount,
+      pending_rewards: nextPendingRewards,
+      rewardEligible,
+      lifetime_stamps: lifetimeStamps,
+      email: customerPayload.email || null,
+    };
+  } catch (error) {
+    if (!shouldUseLegacySchema(error)) {
+      console.error('Error recording purchase:', error);
+      throw error;
+    }
+
+    return recordPurchaseLegacy({
+      client,
+      wallet,
+      totalBwtNumeric,
+      productId,
+      productName,
+      priceBWT,
+      txHash,
+      blockNumber,
+      metadata,
+      rewardThreshold: threshold,
+      stampsAwarded,
+      now,
+    });
+  }
+};
+
+const recordPurchaseLegacy = async ({
+  client,
+  wallet,
+  totalBwtNumeric,
+  productId,
+  productName,
+  priceBWT,
+  txHash,
+  blockNumber,
+  metadata,
+  rewardThreshold,
+  stampsAwarded,
+  now,
+}) => {
+  const price = totalBwtNumeric > 0 ? totalBwtNumeric : parseNumeric(priceBWT);
   const threshold = Number(rewardThreshold) || DEFAULT_REWARD_THRESHOLD;
 
   const { data: existing, error: fetchError } = await client
     .from('customers')
-    .select('stamp_count, pending_rewards, total_volume')
+    .select('stamp_count, pending_rewards, total_volume, created_at')
     .eq('wallet_address', wallet)
     .maybeSingle();
 
   if (fetchError && fetchError.code !== 'PGRST116') {
-    console.error('Error loading customer counters:', fetchError);
     throw fetchError;
   }
 
@@ -114,7 +388,7 @@ export const recordPurchase = async ({
   let pendingRewards = existing?.pending_rewards ?? 0;
   const currentVolume = parseNumeric(existing?.total_volume);
 
-  currentStamp += Number(stampsAwarded);
+  currentStamp += Number(stampsAwarded || 1);
   let rewardEarned = false;
 
   while (currentStamp >= threshold) {
@@ -140,24 +414,22 @@ export const recordPurchase = async ({
     .upsert(upsertPayload, { onConflict: 'wallet_address' });
 
   if (upsertError) {
-    console.error('Error updating customer counters:', upsertError);
     throw upsertError;
   }
 
   const { error: insertPurchaseError } = await client.from('purchase_history').insert({
     wallet_address: wallet,
-    product_id: productId,
-    product_name: productName,
+    product_id: productId || null,
+    product_name: productName || null,
     price_bwt: price,
     tx_hash: txHash,
-    block_number: blockNumber,
-    outlet_id: outletId,
+    block_number: blockNumber || null,
+    outlet_id: null,
     metadata: metadata || null,
     created_at: now,
   });
 
   if (insertPurchaseError && insertPurchaseError.code !== '23505') {
-    console.error('Error recording purchase:', insertPurchaseError);
     throw insertPurchaseError;
   }
 
@@ -165,9 +437,9 @@ export const recordPurchase = async ({
     wallet_address: wallet,
     stamp_count: currentStamp,
     pending_rewards: pendingRewards,
-    total_volume: totalVolume,
-    rewardEarned,
-    last_purchase_at: now,
+    rewardEligible: rewardEarned || pendingRewards > 0,
+    lifetime_stamps: currentStamp,
+    email: null,
   };
 };
 
@@ -178,18 +450,74 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
     throw new Error('wallet address required');
   }
 
+  try {
   const { data: existing, error } = await client
+      .from('stamps')
+      .select('pending_rewards')
+      .eq('customer_wallet', wallet)
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST116') {
+      throw error;
+    }
+
+    const pending = Number(existing?.pending_rewards || 0);
+    if (pending <= 0) {
+      throw new Error('No pending rewards to redeem');
+    }
+
+    const now = new Date().toISOString();
+    const newPending = pending - 1;
+
+    const { error: updateError } = await client
+      .from('stamps')
+      .update({
+        pending_rewards: newPending,
+        reward_eligible: newPending > 0,
+        stamp_count: 0,
+        last_updated: now,
+      })
+      .eq('customer_wallet', wallet);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    const { error: insertError } = await client.from('reward_history').insert({
+      wallet_address: wallet,
+      reward_amount_bwt: parseNumeric(rewardAmountBWT),
+      tx_hash: txHash || null,
+      block_number: blockNumber || null,
+      created_at: now,
+    });
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    return {
+      wallet_address: wallet,
+      pending_rewards: newPending,
+      reward_eligible: newPending > 0,
+      redeemed_at: now,
+    };
+  } catch (error) {
+    if (!shouldUseLegacySchema(error)) {
+      console.error('Reward redemption sync error:', error);
+      throw error;
+    }
+
+    const { data: existing, error: legacyError } = await client
     .from('customers')
     .select('pending_rewards')
     .eq('wallet_address', wallet)
     .maybeSingle();
 
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error loading customer rewards:', error);
-    throw error;
+    if (legacyError && legacyError.code !== 'PGRST116') {
+      throw legacyError;
   }
 
-  const pending = existing?.pending_rewards ?? 0;
+    const pending = Number(existing?.pending_rewards || 0);
   if (pending <= 0) {
     throw new Error('No pending rewards to redeem');
   }
@@ -201,7 +529,6 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
     .eq('wallet_address', wallet);
 
   if (updateError) {
-    console.error('Error updating reward count:', updateError);
     throw updateError;
   }
 
@@ -214,37 +541,62 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
   });
 
   if (insertError) {
-    console.error('Error recording reward redemption:', insertError);
     throw insertError;
   }
 
   return {
     wallet_address: wallet,
     pending_rewards: pending - 1,
+      reward_eligible: pending - 1 > 0,
     redeemed_at: now,
   };
+  }
 };
 
 export const getPurchaseHistory = async (walletAddress, limit = 50) => {
   const client = requireSupabase();
   const wallet = normaliseAddress(walletAddress);
   const query = client
-    .from('purchase_history')
+    .from('orders')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(limit);
 
   if (wallet) {
-    query.eq('wallet_address', wallet);
+    query.eq('customer_wallet', wallet);
   }
 
+  try {
   const { data, error } = await query;
   if (error) {
-    console.error('Error fetching purchase history:', error);
     throw error;
   }
 
   return data || [];
+  } catch (error) {
+    if (!shouldUseLegacySchema(error)) {
+      console.error('Error fetching order history:', error);
+      throw error;
+    }
+
+    const legacyQuery = client
+      .from('purchase_history')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (wallet) {
+      legacyQuery.eq('wallet_address', wallet);
+    }
+
+    const { data, error: legacyError } = await legacyQuery;
+    if (legacyError) {
+      console.error('Legacy purchase history error:', legacyError);
+      throw legacyError;
+    }
+
+    return data || [];
+  }
 };
 
 export const getRewardHistory = async (walletAddress, limit = 25) => {
