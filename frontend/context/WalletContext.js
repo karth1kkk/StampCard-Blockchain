@@ -1,10 +1,6 @@
 import { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { ethers } from 'ethers';
-import {
-  checkContractDeployed,
-  isOwner as checkOwner,
-  isMerchantAuthorizedOnChain,
-} from '../lib/web3';
+import { checkContractDeployed, getContractOwner } from '../lib/web3';
 
 const WalletContext = createContext(null);
 
@@ -23,17 +19,24 @@ const RPC_HOST = process.env.NEXT_PUBLIC_RPC_HOST || '';
 const RPC_PORT = Number(process.env.NEXT_PUBLIC_RPC_PORT || 8545);
 const NETWORK_NAME = process.env.NEXT_PUBLIC_NETWORK || 'Hardhat Localhost';
 const NATIVE_SYMBOL = process.env.NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL || 'ETH';
+const LOOPBACK_RPC_URL = `http://127.0.0.1:${RPC_PORT}`;
+const isLoopbackOrHttps = (url) => {
+  if (typeof url !== 'string') {
+    return false;
+  }
+  return url.includes('127.0.0.1') || url.includes('localhost') || url.startsWith('https://');
+};
+const LEGACY_CHAIN_ID = 1337;
+const ALLOWED_CHAIN_IDS = new Set([EXPECTED_CHAIN_ID, LEGACY_CHAIN_ID]);
+const AUTO_CONNECT_KEY = 'brewtoken:auto-connect';
 
 export const WalletProvider = ({ children }) => {
   const [browserProvider, setBrowserProvider] = useState(null);
   const [resolvedRpcUrl, setResolvedRpcUrl] = useState(() => {
-    if (ENV_RPC_URL) {
+    if (isLoopbackOrHttps(ENV_RPC_URL)) {
       return ENV_RPC_URL;
     }
-    if (RPC_HOST) {
-      return `http://${RPC_HOST}:${RPC_PORT}`;
-    }
-    return `http://127.0.0.1:${RPC_PORT}`;
+    return LOOPBACK_RPC_URL;
   });
   const readOnlyProvider = useMemo(
     () => new ethers.JsonRpcProvider(resolvedRpcUrl),
@@ -49,17 +52,25 @@ export const WalletProvider = ({ children }) => {
   const [customerBalance, setCustomerBalance] = useState(null);
 
   const [merchantAddress, setMerchantAddress] = useState(null);
-  const [merchantSigner, setMerchantSigner] = useState(null);
-  const [merchantBalance, setMerchantBalance] = useState(null);
 
   const [isOwner, setIsOwner] = useState(false);
   const [isOwnerLoading, setIsOwnerLoading] = useState(false);
-  const [isMerchant, setIsMerchant] = useState(false);
-  const [isMerchantLoading, setIsMerchantLoading] = useState(false);
 
   const activeProvider = browserProvider || readOnlyProvider;
-  const isCorrectNetwork = !networkChainId || networkChainId === EXPECTED_CHAIN_ID;
+  const isCorrectNetwork =
+    !networkChainId || ALLOWED_CHAIN_IDS.has(Number(networkChainId));
   const hasWarnedForNetwork = useRef(false);
+
+  const persistAutoConnectPreference = useCallback((enabled) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(AUTO_CONNECT_KEY, enabled ? '1' : '0');
+    } catch (error) {
+      console.warn('Unable to persist auto-connect preference:', error);
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -67,17 +78,13 @@ export const WalletProvider = ({ children }) => {
     }
 
     const deriveRpcUrl = () => {
-      if (ENV_RPC_URL && !ENV_RPC_URL.includes('127.0.0.1') && !ENV_RPC_URL.includes('localhost')) {
+      if (isLoopbackOrHttps(ENV_RPC_URL)) {
         return ENV_RPC_URL;
       }
-      if (RPC_HOST && RPC_HOST !== '127.0.0.1' && RPC_HOST !== 'localhost') {
+      if (RPC_HOST && (RPC_HOST === '127.0.0.1' || RPC_HOST === 'localhost')) {
         return `http://${RPC_HOST}:${RPC_PORT}`;
       }
-      const hostname = window.location.hostname;
-      if (hostname && hostname !== '127.0.0.1' && hostname !== 'localhost') {
-        return `http://${hostname}:${RPC_PORT}`;
-      }
-      return ENV_RPC_URL || `http://127.0.0.1:${RPC_PORT}`;
+      return LOOPBACK_RPC_URL;
     };
 
     const nextUrl = deriveRpcUrl();
@@ -94,7 +101,7 @@ export const WalletProvider = ({ children }) => {
     if (typeof window === 'undefined') {
       return;
     }
-    if (!networkChainId || networkChainId === EXPECTED_CHAIN_ID) {
+    if (!networkChainId || ALLOWED_CHAIN_IDS.has(Number(networkChainId))) {
       hasWarnedForNetwork.current = false;
       return;
     }
@@ -125,7 +132,7 @@ export const WalletProvider = ({ children }) => {
       const chainId = Number.parseInt(hexChainId, 16);
       setNetworkChainId(chainId);
       console.log('[Wallet] chainChanged event:', chainId);
-      if (chainId !== EXPECTED_CHAIN_ID) {
+      if (!ALLOWED_CHAIN_IDS.has(chainId)) {
         window.alert(
           `MetaMask is connected to chain ${chainId}. Switch to Hardhat Localhost (${EXPECTED_CHAIN_ID}).`
         );
@@ -146,19 +153,7 @@ export const WalletProvider = ({ children }) => {
         setCustomerBalance(null);
         return null;
       });
-      setMerchantAddress((prev) => {
-        if (!prev) {
-          return prev;
-        }
-        if (normalised.includes(prev)) {
-          return prev;
-        }
-        setMerchantSigner(null);
-        setMerchantBalance(null);
-        setIsOwner(false);
-        setIsMerchant(false);
-        return null;
-      });
+      setIsOwner(false);
     };
 
     const handleDisconnect = () => {
@@ -211,6 +206,63 @@ export const WalletProvider = ({ children }) => {
     }
   }, [NETWORK_NAME, NATIVE_SYMBOL, EXPECTED_CHAIN_ID_HEX, resolvedRpcUrl]);
 
+  const hydrateConnection = useCallback(
+    async ({ providerInstance, selectedAddress, allowSwitch = false, role }) => {
+      setBrowserProvider(providerInstance);
+
+      let network = await providerInstance.getNetwork();
+      let chainId = Number(network.chainId);
+      setNetworkChainId(chainId);
+
+      if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+        if (allowSwitch) {
+          console.warn(
+            `[Wallet] ${role ?? 'session'} connected to chain ${chainId}. Requesting switch to ${EXPECTED_CHAIN_ID}.`
+          );
+          window.alert(
+            `Switch MetaMask to the Hardhat Localhost network (chainId ${EXPECTED_CHAIN_ID}). Current chainId: ${chainId}.`
+          );
+          await switchToExpectedNetwork();
+          network = await providerInstance.getNetwork();
+          chainId = Number(network.chainId);
+          setNetworkChainId(chainId);
+          if (!ALLOWED_CHAIN_IDS.has(chainId)) {
+            throw new Error(
+              `MetaMask must be connected to an allowed local network (chainId ${EXPECTED_CHAIN_ID}).`
+            );
+          }
+        } else {
+          throw new Error(
+            `MetaMask must be connected to an allowed local network (chainId ${EXPECTED_CHAIN_ID}).`
+          );
+        }
+      }
+
+      const signer = await providerInstance.getSigner(selectedAddress);
+      const balanceWei = await providerInstance.getBalance(selectedAddress);
+      const formattedBalance = ethers.formatEther(balanceWei);
+
+      setCustomerAddress(selectedAddress);
+      setCustomerSigner(signer);
+      setCustomerBalance(formattedBalance);
+
+      persistAutoConnectPreference(true);
+
+      console.log(`[Wallet] ${role ?? 'session'} active account: ${selectedAddress}`);
+      console.log('[Wallet] Resolved RPC URL:', resolvedRpcUrl);
+      console.log(`[Wallet] Network chain ID: ${chainId}`);
+      console.log(`[Wallet] ${role ?? 'session'} balance (${NATIVE_SYMBOL}): ${formattedBalance}`);
+
+      return {
+        address: selectedAddress,
+        signer,
+        balance: formattedBalance,
+        chainId,
+      };
+    },
+    [EXPECTED_CHAIN_ID, NATIVE_SYMBOL, persistAutoConnectPreference, resolvedRpcUrl, switchToExpectedNetwork]
+  );
+
   const connectRole = useCallback(
     async (role) => {
       if (typeof window === 'undefined' || !window.ethereum) {
@@ -221,12 +273,10 @@ export const WalletProvider = ({ children }) => {
       setLastError(null);
 
       try {
-        await window.ethereum
-          .request({
-            method: 'wallet_requestPermissions',
-            params: [{ eth_accounts: {} }],
-          })
-          .catch(() => null);
+        await window.ethereum.request({
+          method: 'wallet_requestPermissions',
+          params: [{ eth_accounts: {} }],
+        });
 
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
         if (!accounts || accounts.length === 0) {
@@ -235,55 +285,12 @@ export const WalletProvider = ({ children }) => {
 
         const selectedAddress = ethers.getAddress(accounts[0]);
         const providerInstance = new ethers.BrowserProvider(window.ethereum, 'any');
-        setBrowserProvider(providerInstance);
-
-        let network = await providerInstance.getNetwork();
-        let chainId = Number(network.chainId);
-        setNetworkChainId(chainId);
-
-        if (chainId !== EXPECTED_CHAIN_ID) {
-          console.warn(
-            `[Wallet] ${role} connected to chain ${chainId}. Requesting switch to ${EXPECTED_CHAIN_ID}.`
-          );
-          window.alert(
-            `Switch MetaMask to the Hardhat Localhost network (chainId ${EXPECTED_CHAIN_ID}). Current chainId: ${chainId}.`
-          );
-          await switchToExpectedNetwork();
-          network = await providerInstance.getNetwork();
-          chainId = Number(network.chainId);
-          setNetworkChainId(chainId);
-          if (chainId !== EXPECTED_CHAIN_ID) {
-            throw new Error(
-              `MetaMask must be connected to the Hardhat Localhost network (chainId ${EXPECTED_CHAIN_ID}).`
-            );
-          }
-        }
-
-        const signer = await providerInstance.getSigner(selectedAddress);
-        const balanceWei = await providerInstance.getBalance(selectedAddress);
-        const formattedBalance = ethers.formatEther(balanceWei);
-
-        console.log(`[Wallet] ${role} active account: ${selectedAddress}`);
-        console.log('[Wallet] Resolved RPC URL:', resolvedRpcUrl);
-        console.log(`[Wallet] Network chain ID: ${chainId}`);
-        console.log(`[Wallet] ${role} balance (${NATIVE_SYMBOL}): ${formattedBalance}`);
-
-        if (role === 'customer') {
-          setCustomerAddress(selectedAddress);
-          setCustomerSigner(signer);
-          setCustomerBalance(formattedBalance);
-        } else {
-          setMerchantAddress(selectedAddress);
-          setMerchantSigner(signer);
-          setMerchantBalance(formattedBalance);
-        }
-
-        return {
-          address: selectedAddress,
-          signer,
-          balance: formattedBalance,
-          chainId,
-        };
+      return await hydrateConnection({
+        providerInstance,
+        selectedAddress,
+        allowSwitch: true,
+        role,
+      });
       } catch (error) {
         console.error(`Failed to connect ${role} wallet:`, error);
         setLastError(error);
@@ -292,28 +299,21 @@ export const WalletProvider = ({ children }) => {
         setIsConnecting(false);
       }
     },
-    [EXPECTED_CHAIN_ID, NATIVE_SYMBOL, resolvedRpcUrl, switchToExpectedNetwork]
+    [hydrateConnection]
   );
 
   const connectCustomerWallet = useCallback(() => connectRole('customer'), [connectRole]);
-  const connectMerchantWallet = useCallback(() => connectRole('merchant'), [connectRole]);
 
   const disconnectCustomerWallet = useCallback(() => {
     setCustomerAddress(null);
     setCustomerSigner(null);
     setCustomerBalance(null);
-  }, []);
-
-  const disconnectMerchantWallet = useCallback(() => {
-    setMerchantAddress(null);
-    setMerchantSigner(null);
-    setMerchantBalance(null);
     setIsOwner(false);
-    setIsMerchant(false);
+    persistAutoConnectPreference(false);
   }, []);
 
   const ensureCorrectNetwork = useCallback(async () => {
-    if (networkChainId === EXPECTED_CHAIN_ID) {
+    if (networkChainId && ALLOWED_CHAIN_IDS.has(Number(networkChainId))) {
       return;
     }
     await switchToExpectedNetwork();
@@ -321,7 +321,8 @@ export const WalletProvider = ({ children }) => {
 
   useEffect(() => {
     const determineOwner = async () => {
-      if (!merchantAddress || !activeProvider) {
+      if (!activeProvider) {
+        setMerchantAddress(null);
         setIsOwner(false);
         return;
       }
@@ -331,13 +332,21 @@ export const WalletProvider = ({ children }) => {
         const deployed = await checkContractDeployed(activeProvider);
         if (!deployed) {
           console.warn('Contract not found at configured address. Owner check skipped.');
+          setMerchantAddress(null);
           setIsOwner(false);
           return;
         }
-        const ownerMatch = await checkOwner(merchantAddress, activeProvider);
+        const ownerAddress = await getContractOwner(activeProvider);
+        setMerchantAddress(ownerAddress);
+        if (!ownerAddress || !customerAddress) {
+          setIsOwner(false);
+          return;
+        }
+        const ownerMatch = ownerAddress.toLowerCase() === customerAddress.toLowerCase();
         setIsOwner(ownerMatch);
       } catch (error) {
         console.error('Unable to determine owner status:', error);
+        setMerchantAddress(null);
         setIsOwner(false);
       } finally {
         setIsOwnerLoading(false);
@@ -345,34 +354,50 @@ export const WalletProvider = ({ children }) => {
     };
 
     determineOwner();
-  }, [merchantAddress, activeProvider]);
+  }, [activeProvider, customerAddress]);
 
   useEffect(() => {
-    const determineMerchant = async () => {
-      if (!merchantAddress || !activeProvider) {
-        setIsMerchant(false);
-        return;
-      }
+    if (typeof window === 'undefined' || !window.ethereum) {
+      return;
+    }
+    if (customerAddress) {
+      return;
+    }
+    const shouldAutoConnect = window.localStorage.getItem(AUTO_CONNECT_KEY) === '1';
+    if (!shouldAutoConnect) {
+      return;
+    }
 
-      setIsMerchantLoading(true);
+    let cancelled = false;
+    const attemptAutoConnect = async () => {
       try {
-        const deployed = await checkContractDeployed(activeProvider);
-        if (!deployed) {
-          setIsMerchant(false);
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        if (!accounts || accounts.length === 0) {
           return;
         }
-        const merchantMatch = await isMerchantAuthorizedOnChain(merchantAddress, activeProvider);
-        setIsMerchant(merchantMatch);
+        const selectedAddress = ethers.getAddress(accounts[0]);
+        const providerInstance = new ethers.BrowserProvider(window.ethereum, 'any');
+        if (cancelled) {
+          return;
+        }
+        await hydrateConnection({
+          providerInstance,
+          selectedAddress,
+          allowSwitch: false,
+          role: 'auto',
+        });
+        console.log('[Wallet] Auto-connected to previously authorised account:', selectedAddress);
       } catch (error) {
-        console.error('Unable to determine merchant status:', error);
-        setIsMerchant(false);
-      } finally {
-        setIsMerchantLoading(false);
+        console.warn('Auto-connect skipped:', error?.message || error);
       }
     };
 
-    determineMerchant();
-  }, [merchantAddress, activeProvider]);
+    attemptAutoConnect();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customerAddress, hydrateConnection]);
 
   const value = useMemo(
     () => ({
@@ -385,21 +410,15 @@ export const WalletProvider = ({ children }) => {
       isConnecting,
       lastError,
       connectCustomerWallet,
-      connectMerchantWallet,
       disconnectCustomerWallet,
-      disconnectMerchantWallet,
       switchToExpectedNetwork,
       ensureCorrectNetwork,
       customerAddress,
       customerSigner,
       customerBalance,
       merchantAddress,
-      merchantSigner,
-      merchantBalance,
       isOwner,
       isOwnerLoading,
-      isMerchant,
-      isMerchantLoading,
     }),
     [
       activeProvider,
@@ -410,21 +429,15 @@ export const WalletProvider = ({ children }) => {
       isConnecting,
       lastError,
       connectCustomerWallet,
-      connectMerchantWallet,
       disconnectCustomerWallet,
-      disconnectMerchantWallet,
       switchToExpectedNetwork,
       ensureCorrectNetwork,
       customerAddress,
       customerSigner,
       customerBalance,
       merchantAddress,
-      merchantSigner,
-      merchantBalance,
       isOwner,
       isOwnerLoading,
-      isMerchant,
-      isMerchantLoading,
     ]
   );
 

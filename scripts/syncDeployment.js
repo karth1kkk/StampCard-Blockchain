@@ -10,7 +10,8 @@ const DEFAULT_NATIVE_SYMBOL = 'ETH';
 const FALLBACK_HOST = '127.0.0.1';
 
 const REQUIRED_KEYS = [
-  'NEXT_PUBLIC_CONTRACT_ADDRESS',
+  'NEXT_PUBLIC_LOYALTY_ADDRESS',
+  'NEXT_PUBLIC_TOKEN_ADDRESS',
   'NEXT_PUBLIC_NETWORK',
   'NEXT_PUBLIC_RPC_URL',
   'NEXT_PUBLIC_CHAIN_ID',
@@ -40,14 +41,15 @@ function readDeployment() {
   }
 
   const json = JSON.parse(fs.readFileSync(deploymentPath, 'utf8'));
-  if (!json.address) {
-    throw new Error('deployment.json missing contract address');
+  if (!json.coffeeLoyaltyAddress || !json.brewTokenAddress) {
+    throw new Error('deployment.json missing contract addresses');
   }
 
   const rpcUrl = json.rpcUrl || `http://${resolveLocalHost()}:8545`;
 
   return {
-    address: json.address,
+    coffeeLoyaltyAddress: json.coffeeLoyaltyAddress,
+    brewTokenAddress: json.brewTokenAddress,
     network: json.network || 'localhost',
     rpcUrl,
     chainId: json.chainId ?? HARDHAT_CHAIN_ID,
@@ -84,7 +86,8 @@ function main() {
     envValues = parseEnv(fs.readFileSync(envPath, 'utf8'));
   }
 
-  envValues.NEXT_PUBLIC_CONTRACT_ADDRESS = deployment.address;
+  envValues.NEXT_PUBLIC_LOYALTY_ADDRESS = deployment.coffeeLoyaltyAddress;
+  envValues.NEXT_PUBLIC_TOKEN_ADDRESS = deployment.brewTokenAddress;
   envValues.NEXT_PUBLIC_NETWORK = deployment.network;
   envValues.NEXT_PUBLIC_RPC_URL = deployment.rpcUrl;
   envValues.NEXT_PUBLIC_CHAIN_ID = String(deployment.chainId);

@@ -1,448 +1,220 @@
-# Blockchain Loyalty Stamp Card DApp
+# BrewToken Coffee Loyalty DApp
 
-A decentralized application (DApp) that revolutionizes traditional loyalty stamp cards by leveraging blockchain technology. This system replaces physical stamp cards with digital blockchain tokens, providing transparency, security, and fraud-proof transactions.
+A full-stack coffee loyalty experience that replaces paper stamp cards with BrewToken (BWT), an ERC‑20 powered rewards currency. Customers buy drinks with BrewToken, earn stamps automatically, and unlock free coffees after every 8 purchases. Merchants control rewards directly from the CoffeeLoyalty smart contract and can review Supabase-backed analytics in real time.
 
 ## 📋 Table of Contents
 
 - [Project Overview](#project-overview)
-- [Tech Stack](#tech-stack)
+- [System Architecture](#system-architecture)
 - [Installation Guide](#installation-guide)
-- [Features](#features)
-- [Folder Structure](#folder-structure)
+- [Environment Variables](#environment-variables)
+- [Using the DApp](#using-the-dapp)
+- [Troubleshooting](#troubleshooting)
 - [Commands](#commands)
+- [Project Structure](#project-structure)
 - [Contributors](#contributors)
 
 ## 🎯 Project Overview
 
-### Problem Statement
+### Why BrewToken?
 
-Traditional loyalty stamp card systems face several critical issues:
+Traditional loyalty punch cards are easy to lose, simple to forge, and offer little visibility into customer behaviour. BrewToken solves this by:
 
-- **Physical Cards**: Easy to lose, damage, or forget
-- **Fraud Susceptibility**: Stamps can be forged, duplicated, or tampered with
-- **Lack of Transparency**: Customers cannot verify their stamp count or reward status
-- **No Cross-Outlet Support**: Cards are usually tied to a single business
-- **Manual Tracking**: Businesses must manually track customer stamps and rewards
-- **Limited Analytics**: Difficult to gather insights on customer behavior
+- **Tokenised purchases** – customers pay for coffee with BrewToken (BWT).
+- **Automatic stamp accrual** – each confirmed purchase adds a stamp directly on-chain.
+- **Owner-verified rewards** – only the contract owner can redeem free drinks; no forged cards.
+- **Real-time analytics** – Supabase stores aggregated purchase/reward data for dashboards.
+- **Mobile-first UX** – the entire experience is optimised for MetaMask Mobile scans.
 
-### Blockchain-Based Solution
+### End-to-End Flow
 
-Our solution leverages blockchain technology to address these challenges:
+1. **Merchant prints QR codes** from the dashboard for each coffee item. The QR encodes price + metadata.
+2. **Customer scans the QR** with MetaMask Mobile, reviews the BrewToken transfer, and confirms.
+3. **CoffeeLoyalty contract** transfers BWT to the merchant and increments the customer’s stamp count.
+4. **Supabase sync** records the purchase so dashboards stay in sync with on-chain events.
+5. **After 8 stamps**, the merchant redeems a reward in-app; CoffeeLoyalty verifies ownership and optionally pays out BrewToken from the reward pool.
 
-- **Digital Tokens**: Stamps are represented as ERC-1155 tokens on the blockchain
-- **Immutable Records**: All transactions are recorded on-chain, making fraud impossible
-- **Transparent & Verifiable**: Customers can view their stamp history and rewards in real-time
-- **Decentralized**: No single point of failure, accessible from anywhere
-- **Automatic Rewards**: Smart contracts automatically grant rewards when conditions are met
-- **Multi-Outlet Support**: Customers can use stamps across different outlets (future enhancement)
-- **Cost-Effective**: Eliminates printing and distribution costs
+## 🧱 System Architecture
 
-### How It Works
+### Smart Contracts
 
-1. **Customer scans a merchant QR**: The QR encodes outlet metadata plus the merchant challenge endpoint.
-2. **Merchant API returns a signed challenge**: The customer app requests `/api/merchant/challenge` which signs `{customer, outletId, nonce, contract, chainId}` with an authorised merchant key.
-3. **Customer wallet submits the transaction**: The customer signs and broadcasts `issueStamp(customer, outletId, merchantSig)` via MetaMask/WalletConnect.
-4. **Smart contract verifies and mints**: `StampCard.sol` checks the merchant signature, increments the on-chain stamp counter, and mints an ERC-1155 stamp (and reward every 8th stamp).
-5. **Rewards stay redeemable**: Customers can call `redeemReward` at any time, burning a reward token for off-chain fulfilment.
+- **`BrewToken.sol`** – ERC‑20 token (symbol `BWT`, 18 decimals). Deployments mint 1,000,000 BWT to the contract owner.
+- **`CoffeeLoyalty.sol`** – tracks stamp counts, handles purchases (`buyCoffee`), owner-issued stamps (`addStamp`), reward redemptions, and reward pool funding.
 
-```
-┌─────────────┐     scan QR      ┌──────────────┐   GET challenge    ┌─────────────────────┐
-│ Customer    │ ───────────────▶ │ Customer App │ ─────────────────▶ │ Merchant API/Signer │
-│ Wallet      │                  └──────────────┘ ◀───────────────── └─────────────────────┘
-│ (MetaMask)  │    issueStamp tx        │                                ▲
-└─────┬───────┘ ───────────────────────▶│                                │
-      │                                ▼            events              │
-      │                         ┌──────────────────────────┐            │
-      └────────────────────────▶│   StampCard.sol (L1)     │────────────┘
-                                │ (ERC-1155 + rewards)     │
-                                └──────────────────────────┘
-```
+Key events:
+- `CoffeePurchased(customer, amount, timestamp)`
+- `StampAdded(customer, stampBalance, pendingRewards)`
+- `RewardEarned(customer, totalPendingRewards)`
+- `RewardRedeemed(customer, remainingRewards, payoutAmount)`
 
-## 🛠 Tech Stack
+### Backend & Database (Supabase)
 
-### Smart Contracts & Blockchain
-- **Hardhat**: Development environment for Ethereum smart contracts
-- **Solidity**: Smart contract programming language (v0.8.20)
-- **OpenZeppelin**: Battle-tested smart contract libraries (ERC-1155, Ownable)
-- **Ethers.js**: JavaScript library for interacting with Ethereum blockchain
+Tables:
+- `customers(wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, …)`
+- `purchase_history(wallet_address, product_id, product_name, price_bwt, tx_hash, block_number, outlet_id, metadata, …)`
+- `reward_history(wallet_address, reward_amount_bwt, tx_hash, block_number, …)`
+- `outlets(...)` (for QR metadata – optional).
 
-### Frontend
-- **Next.js**: React framework for production-ready applications
-- **React**: UI library for building user interfaces
-- **Tailwind CSS**: Utility-first CSS framework for rapid UI development
-- **React Toastify**: Notification system for user feedback
+API routes:
+- `POST /api/stamps` – syncs purchases from the frontend.
+- `PATCH /api/stamps` – merchant reward redemption (requires owner wallet signature).
+- `GET /api/stamps?address=0x…` – fetches customer summary.
+- `GET /api/customers?scope=all&owner=…&signature=…` – returns full customer list (owner-signed).
+- `GET /api/transactions` – exposes purchase/reward history.
 
-### Blockchain Integration
-- **MetaMask**: Web3 wallet for browser-based blockchain interactions
-- **Ethers.js v6**: Modern Ethereum JavaScript library
+### Frontend (Next.js + Tailwind)
 
-## 🔐 Smart Contract Interface
+- **Customer Dashboard** – BrewToken balance, stamp progress, coffee catalogue (10 drinks), purchase button per item, recent activity.
+- **Merchant Dashboard (owner only)** – customer list (stamps, rewards, volume), reward redemption, reward pool controls, QR generator.
+- **QR Scanner** – mobile-optimised page that reads `BWT_PURCHASE` payloads and posts to `/api/stamps` after payment.
 
-`hardhat/contracts/StampCard.sol` extends OpenZeppelin `ERC1155` and `Ownable`, exposing the following public API:
-
-- `issueStamp(address customer, uint256 outletId, bytes merchantSig)` — callable by the customer only. Verifies the merchant signature, mints one stamp token (`tokenId = outletId`), increments `stampCount`, and emits `StampIssued`.
-- `redeemReward(address customer)` — callable by the customer. Burns one reward token (`tokenId = 0`), decrements `rewardCount`, and emits `RewardRedeemed`.
-- `getStampCount(address customer)` / `getRewardCount(address customer)` — on-chain counters used by the UI.
-- `setRewardThreshold(uint256)` — owner-only control, defaulting to 8, follows README guidance.
-- `authorizeMerchant(address)` / `revokeMerchant(address)` — owner-only allowlist for merchant signer keys used by the challenge endpoint.
-- Events: `StampIssued(customer, outletId, totalStamps)`, `RewardGranted(customer, rewardCount)`, `RewardRedeemed(customer, remainingRewards)`, `MerchantAuthorized`, `MerchantRevoked`, `RewardThresholdUpdated`.
-
-### Database & Off-Chain Storage
-- **Supabase**: Cloud-based PostgreSQL database for customer names, outlet info, and transaction history
-
-### Testing & Development
-- **Chai/Mocha**: Testing framework for smart contract testing
-- **Hardhat Network**: Local blockchain network for development and testing
-
-## 📦 Installation Guide
+## 🚀 Installation Guide
 
 ### Prerequisites
+- Node.js ≥ 18
+- npm ≥ 9
+- MetaMask browser extension (and MetaMask Mobile for scans)
+- Optional: Supabase project for persistence
 
-- Node.js (v16 or higher)
-- npm or yarn
-- MetaMask browser extension
-- Git
-
-### Step 1: Clone the Repository
-
+### 1. Clone & Install
 ```bash
 git clone <repository-url>
 cd StampCard-Blockchain
-```
-
-### Step 2: Install Dependencies
-
-Install dependencies for both Hardhat and Frontend:
-
-```bash
 npm run install:all
 ```
 
-Or install separately:
-
-```bash
-# Install Hardhat dependencies
-npm run install:hardhat
-
-# Install Frontend dependencies
-npm run install:frontend
-```
-
-### Step 3: Start the Local Blockchain & Deploy the Contract
-
-> You’ll typically keep three terminals open during development.
-
-**Terminal 1 – Hardhat node (keep running)**
+### 2. Start Hardhat Node
 ```bash
 npm run hardhat:node
 ```
-This boots a local JSON-RPC endpoint at `http://127.0.0.1:8545` (chain id `31337`) and binds to `0.0.0.0` so devices on the same network can reach it (use `http://<your-lan-ip>:8545`).
+This exposes `http://127.0.0.1:8545` (chain id `31337`). Leave it running while you develop.
 
-**Terminal 2 – Compile and deploy**
+### 3. Deploy Contracts & Sync Env
 ```bash
-npm run hardhat:compile
+# In a new terminal
+defaultReward=5  # optional override
 npm run hardhat:deploy:save
 ```
-`deploy:save` deploys the `StampCard` contract and writes the latest address, RPC URL, chain id, and native token symbol to `frontend/.env.local`.
+This compiles + deploys `BrewToken` and `CoffeeLoyalty`, then writes the addresses to `frontend/.env.local` (`NEXT_PUBLIC_LOYALTY_ADDRESS`, `NEXT_PUBLIC_TOKEN_ADDRESS`, etc.). If you see “Cannot connect to network localhost”, make sure `npm run hardhat:node` is running first.
 
-**Terminal 3 – Next.js frontend (keep running)**
+### 4. Run the Frontend
 ```bash
 npm run frontend:dev
 ```
+Visit `http://localhost:3000`.
 
-### Step 4: Configure Environment Variables
+### 5. Configure MetaMask
+- Network: `http://127.0.0.1:8545`, chain id `31337`, symbol `ETH`.
+- Import the deployer key printed by Hardhat (`0x59c6…f7dec`) for owner operations.
+- Import additional accounts for customer testing if needed.
 
-If you use `npm run hardhat:deploy:save`, the file `frontend/.env.local` is generated automatically with defaults such as:
-```env
-NEXT_PUBLIC_CONTRACT_ADDRESS=0x...
-NEXT_PUBLIC_NETWORK=localhost
-NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8545
-NEXT_PUBLIC_CHAIN_ID=31337
-NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=ETH
-NEXT_PUBLIC_RPC_HOST=127.0.0.1
-NEXT_PUBLIC_MERCHANT_CHALLENGE_URL=/api/merchant/challenge
-# Server-only values (do not prefix with NEXT_PUBLIC)
-MERCHANT_SIGNER_PRIVATE_KEY=0xabc123...        # Development signer for merchant API
-MERCHANT_REGISTRATION_SECRET=dev-secret-key    # Optional guard for /api/merchant/register
-```
-Editing `.env.local` requires a restart of the frontend dev server because Next.js only reads environment variables on startup.
-
-### Step 5: Configure MetaMask
-
-1. Install the MetaMask browser extension.
-2. Add the Hardhat local network:
-   ```
-   Network Name: Hardhat Local
-   RPC URL:      http://127.0.0.1:8545
-   Chain ID:     31337
-   Currency:     ETH
-   ```
-3. Import one of the private keys printed by `npm run hardhat:node` so the wallet has test ETH/MATIC.
-
-> Development tip: Hardhat now seeds two deterministic wallets. Account #0 (contract owner) uses  
-> `0x59c6995e998f97a5a0044966f094538b6a520438d93f8593b233c36ff23f7dec`. Import this when you need owner privileges.  
-> Account #1 (authorised merchant) uses  
-> `0x8b3a350cf5c34c5edfd2832f440b1046dce476fff58726f0b00057d95f4b5bad`. Import it for merchant demos.  
-> Override these with `OWNER_PRIVATE_KEY` / `MERCHANT_PRIVATE_KEY` in `.env` if you prefer your own keys.
-
-### Step 6: Connect Wallet and Test
-
-1. Visit [http://localhost:3000](http://localhost:3000).
-2. Click **Connect Wallet** and approve the MetaMask prompt.
-3. Explore the Customer and Merchant dashboards to confirm the contract connection.
-
-### Merchant Signing Endpoint (Local Dev Only)
-
-- The API route `frontend/pages/api/merchant/challenge.js` signs stamp challenges with `MERCHANT_SIGNER_PRIVATE_KEY`.
-- Keep this private key for development only; in production the signature must come from a secure server or HSM that holds the merchant key.
-- The merchant dashboard lets the owner authorise and revoke signer addresses. Ensure the authorised address matches the signer used by the API.
-
-## Quick Start Checklist
-
-| Terminal | Command                         | Keep Running? | Notes                                |
-|----------|---------------------------------|---------------|--------------------------------------|
-| 1        | `npm run hardhat:node`          | ✅            | Local blockchain (chain id 31337)     |
-| 2        | `npm run hardhat:deploy:save`   | ❌            | Deploys & auto-writes `.env.local`   |
-| 3        | `npm run frontend:dev`          | ✅            | Next.js dev server (`http://localhost:3000`) |
-
-Restart Terminal 3 whenever you edit environment variables, then perform a hard refresh in the browser (`Cmd/Ctrl + Shift + R`) to clear cached values.
-
----
-
-## Deploying to Polygon Amoy
-
-1. **Set environment variables** in `frontend/.env.local`:
-   ```env
-   NEXT_PUBLIC_CONTRACT_ADDRESS=<Amoy contract address>
-   NEXT_PUBLIC_NETWORK=polygon-amoy
-   NEXT_PUBLIC_RPC_URL=https://rpc-amoy.polygon.technology
-   NEXT_PUBLIC_CHAIN_ID=80002
-   NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=MATIC
-   ```
-2. **Deploy with Hardhat** (after adding credentials to `hardhat/.env` and configuring `hardhat.config.js`):
-   ```bash
-    npx hardhat run scripts/deploy.js --network polygonAmoy
-   ```
-3. **Fund your wallet** via [Polygon’s faucet](https://faucet.polygon.technology) and ensure MetaMask is set to the Polygon Amoy network (chain id 80002).
-4. Restart the frontend to load the new variables. The UI automatically swaps all currency labels to the value provided in `NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL`.
-
----
-
-## Supabase Integration (Optional)
-
-1. Create a project at [supabase.com](https://supabase.com) and copy the Project URL + anon key (Settings → API).
-2. Execute the schema in the SQL editor (same SQL snippet earlier in this README).
+### 6. Supabase Setup (optional but recommended)
+1. Create a Supabase project.
+2. Run the SQL in `frontend/supabase-schema.sql`.
 3. Add to `frontend/.env.local`:
    ```env
-   NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+   NEXT_PUBLIC_SUPABASE_URL=...
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+   SUPABASE_URL=...
+   SUPABASE_ANON_KEY=...
    ```
-4. Restart the frontend. Customer metadata and transaction history will now sync with Supabase.
+4. Restart the frontend dev server.
 
----
+## 🔐 Environment Variables
 
-## Using the DApp
+`frontend/.env.local` (auto-generated by `hardhat:deploy:save`):
+```env
+NEXT_PUBLIC_LOYALTY_ADDRESS=0x...
+NEXT_PUBLIC_TOKEN_ADDRESS=0x...
+NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8545
+NEXT_PUBLIC_CHAIN_ID=31337
+NEXT_PUBLIC_NETWORK=hardhat-localhost
+NEXT_PUBLIC_NATIVE_TOKEN_SYMBOL=ETH
+NEXT_PUBLIC_REWARD_THRESHOLD=8
+MERCHANT_ACCESS_MESSAGE=CoffeeLoyaltyMerchantAccess
+```
 
-### Customer View
-- Monitor stamp totals, progress toward the next reward, and overall reward balance.
-- Scan merchant QR codes to request a merchant-signed challenge, then approve the on-chain mint in MetaMask.
-- Redeem rewards directly; the button disables itself when no rewards remain.
+Additional options:
+- `MERCHANT_API_KEY` (legacy; replaced by owner signature flow).
+- Supabase secrets listed above.
 
-### Merchant View (Contract Owner)
-- Register outlets, publish QR payloads (with address & website), and manage authorised signer keys.
-- Review analytics: total stamps, rewards granted, and unique customer count.
-- Only authorised merchant addresses can sign challenges; customers still execute the transaction from their own wallet.
-- Authorised merchant signer wallets can now access a limited dashboard to preview their assigned outlets and QR codes without switching to the owner account.
+## ☕ Using the DApp
+
+### Customer Journey
+1. Connect MetaMask via the top-right button.
+2. Browse the coffee grid, tap **Buy with MetaMask** on any item.
+3. Confirm the BrewToken transfer; once mined, you’ll see a toast and your stamp count updates.
+4. At 8 stamps, the dashboard highlights your free drink.
+5. Alternatively, open **Scan & Pay** on a phone, scan the merchant’s QR, and approve the transfer.
+
+### Merchant / Owner Journey
+1. Connect the deployer wallet on `/merchant`.
+2. Review live stats (stamp totals, pending rewards, reward pool balance).
+3. Redeem free drinks by clicking **Redeem Reward** next to a customer (executes on-chain + posts to Supabase).
+4. Fund the reward pool when required (pulls BWT from the owner wallet into CoffeeLoyalty).
+5. Print QR codes for each coffee via the **Coffee Menu QR** module.
 
 ### Transaction History
-- Displays `StampIssued`, `RewardGranted`, and `RewardRedeemed` events for the connected wallet along with quick explorer links.
+The History tab aggregates purchases and reward redemptions from Supabase (wallet-specific if connected, global otherwise).
 
----
+## 🧪 Testing & Verification
 
-## Project Structure
+- `npm run test:all` – runs Hardhat unit tests (CoffeeLoyalty) and Next.js lint.
+- `npm run hardhat:test` – smart contract tests only.
+- `npm run sync:abi` – regenerate `frontend/constants/*.json` ABIs after contract changes.
+
+## 🛠 Troubleshooting
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `Cannot connect to the network localhost` | Hardhat node not running | Start `npm run hardhat:node` before deploying |
+| `Internal JSON-RPC error` on purchase | Insufficient BWT balance or wrong approval | Transfer BWT to the customer and re-approve |
+| Customer data missing | Supabase creds absent | Add Supabase env vars and restart frontend |
+| Merchant API returns 401 | Owner signature missing or invalid | Click **Refresh Customers** while connected with the deployer wallet |
+
+## 🗂 Project Structure
 
 ```
 StampCard-Blockchain/
-├── hardhat/        # Smart contracts, tests, deployment scripts
-├── frontend/       # Next.js app, components, API routes, styles
-├── scripts/        # Shared tooling (ABI sync, etc.)
-├── deployment.json # Latest deployment info (auto-generated)
+├── hardhat/                  # Solidity contracts, tests, deployment scripts
+├── frontend/                 # Next.js application
+│   ├── components/           # React UI components
+│   ├── constants/            # Generated ABI + coffee menu data
+│   ├── lib/                  # web3 + Supabase helpers
+│   ├── pages/                # Next.js routes & API endpoints
+│   └── supabase-schema.sql   # Database schema
+├── scripts/                  # Node utilities (ABI & env sync)
+├── deployment.json           # Last deployment metadata
 └── README.md
 ```
 
----
+## 📦 Commands
 
-## Troubleshooting
-
-| Symptom | Likely Cause | Fix |
-|---------|--------------|-----|
-| `Contract not deployed. Owner check skipped.` | Frontend still using cached env vars. | Restart `npm run frontend:dev`, hard refresh the browser. |
-| `could not decode result data (value="0x")` | Wrong contract address or wrong network. | Redeploy, ensure Hardhat node is running, verify `.env.local`, restart frontend. |
-| Gas estimation fails / `Internal JSON-RPC error` | Amount left blank or wallet has no funds. | Enter a non-zero amount and ensure the sender has native tokens. |
-| Contract address keeps changing | Hardhat node restarted. | Keep the node running, or rerun `npm run hardhat:deploy:save` after each restart. |
-| MetaMask can't connect | Wrong network or locked wallet. | Switch to the correct network (Hardhat Local / Polygon Amoy) and reconnect. |
-
-If issues persist, clear Next.js cache (`rm -rf frontend/.next`), redeploy the contract, and restart all terminals in order.
-
----
-
-## Why the Contract Address Changes Locally
-
-Hardhat resets its state whenever you stop the node. Contract addresses are derived from the deployer address + nonce, so a fresh chain produces a new address. Recommended workflow:
-
-1. Start `npm run hardhat:node` once and keep it running.
-2. Deploy with `npm run hardhat:deploy:save`.
-3. Restart the frontend to pick up the new `.env.local`.
-
-If you intentionally restart the node, repeat these steps to update the address everywhere.
-
----
-
-## 🚀 Commands
-
-### Root Level (Convenience Scripts)
-
-```bash
-# Install all dependencies
-npm run install:all
-
-# Install Hardhat dependencies only
-npm run install:hardhat
-
-# Install Frontend dependencies only
-npm run install:frontend
-
-# Sync contract ABI from Hardhat to Frontend
-npm run sync:abi
-
-# Sync deployment metadata into frontend/.env.local
-npm run sync:deployment
-
-# Compile contracts and sync ABI
-npm run hardhat:compile
-
-# Run contract tests
-npm run hardhat:test
-
-# Start Hardhat local node
-npm run hardhat:node
-
-# Deploy contract to local network and update frontend env file
-npm run hardhat:deploy:save
-
-# Run contract tests + frontend lint
-npm run test:all
-
-# Start Next.js development server
-npm run frontend:dev
-
-# Build Next.js for production
-npm run frontend:build
-
-# Start Next.js production server
-npm run frontend:start
-```
-
-### Hardhat Commands
-
-```bash
-cd hardhat
-
-# Compile smart contracts
-npx hardhat compile
-
-# Run tests
-npx hardhat test
-
-# Start local Hardhat node
-npx hardhat node
-
-# Deploy contract to localhost
-npx hardhat run scripts/deploy.js --network localhost
-
-# Deploy to Polygon Amoy testnet
-npx hardhat run scripts/deploy.js --network polygonAmoy
-```
-
-### Frontend Commands
-
-```bash
-cd frontend
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
-
-# Start production server
-npm run start
-
-# Run ESLint
-npm run lint
-```
+| Command | Description |
+|---------|-------------|
+| `npm run install:all` | Install root + hardhat + frontend dependencies |
+| `npm run hardhat:node` | Start local JSON-RPC node |
+| `npm run hardhat:deploy:save` | Deploy BrewToken & CoffeeLoyalty + refresh env |
+| `npm run hardhat:compile` | Compile Solidity contracts |
+| `npm run hardhat:test` | Run contract tests |
+| `npm run sync:abi` | Sync ABIs to `frontend/constants` |
+| `npm run sync:deployment` | Copy deployment.json → frontend `.env.local` |
+| `npm run frontend:dev` | Start Next.js dev server |
+| `npm run frontend:build` / `frontend:start` | Build/serve production frontend |
+| `npm run lint` | Run Next.js ESLint |
+| `npm run test:all` | Contracts test + frontend lint |
 
 ## 👥 Contributors
 
-### Group Members
+| Name | Role |
+|------|------|
+| [Your Name] | Project Lead / Smart Contracts |
+| [Teammate] | Frontend Developer |
+| [Teammate] | Backend & Supabase |
+| [Teammate] | UI/UX Designer |
 
-| Name | TP Number | Role |
-|------|-----------|------|
-| [Your Name] | [Your TP] | Project Lead / Developer |
-| [Member 2] | [TP] | Smart Contract Developer |
-| [Member 3] | [TP] | Frontend Developer |
-| [Member 4] | [TP] | UI/UX Designer |
-| [Member 5] | [TP] | Testing & QA |
-
-**Note**: Please update the contributors table with your actual group member names and TP numbers.
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🔗 Additional Resources
-
-- [Hardhat Documentation](https://hardhat.org/docs)
-- [Next.js Documentation](https://nextjs.org/docs)
-- [Ethers.js Documentation](https://docs.ethers.io)
-- [OpenZeppelin Contracts](https://docs.openzeppelin.com/contracts)
-- [MetaMask Documentation](https://docs.metamask.io)
-- [Supabase Documentation](https://supabase.com/docs) (if using Supabase)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📞 Support
-
-For issues, questions, or contributions, please open an issue on the repository.
+> Update the table with your actual team members.
 
 ---
 
-**Built with ❤️ using Hardhat, Next.js, and Ethereum**
-
-## 🔧 Developer Tools: Bulk Wallet Generation & Funding
-
-You can now easily generate and fund multiple test wallets for rapid testing.
-
-Generate test wallets
-
-```bash
-npm run dev:wallets:generate
-```
-
-This creates `bulk-wallets.json` with random wallets and private keys.
-
-Fund wallets
-
-```bash
-# Local Hardhat node funding
-npm run dev:wallets:fund
-
-# Or fund via Amoy testnet (edit .env with Amoy RPC and your funded dev wallet key)
-RPC_URL=https://rpc-amoy.polygon.technology FUNDING_PRIVATE_KEY=0x... npm run dev:wallets:fund
-```
-
-Each wallet receives `FUND_AMOUNT` POL (default 0.5).
-
-Import private keys into MetaMask for simulation or demo testing.
+Built with ❤️ using BrewToken, CoffeeLoyalty, Hardhat, Supabase, and Next.js. Enjoy your coffee! ☕

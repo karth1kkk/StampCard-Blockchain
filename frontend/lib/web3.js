@@ -1,20 +1,31 @@
 import { ethers } from 'ethers';
-import { STAMPCARD_ABI } from './contractABI';
+import { COFFEE_LOYALTY_ABI, BREW_TOKEN_ABI } from './contractABI';
 
-const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
+const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
+const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_TOKEN_ADDRESS;
 
-export const getContract = (signerOrProvider) => {
-  if (!CONTRACT_ADDRESS) {
-    throw new Error('Contract address is not configured. Set NEXT_PUBLIC_CONTRACT_ADDRESS in .env.local.');
+const requireAddress = (address, name) => {
+  if (!address) {
+    throw new Error(`${name} is not configured. Update your .env.local file.`);
   }
-  return new ethers.Contract(CONTRACT_ADDRESS, STAMPCARD_ABI, signerOrProvider);
+  return address;
 };
 
-export const getContractReadOnly = (provider) => getContract(provider);
+export const getLoyaltyContract = (signerOrProvider) => {
+  const address = requireAddress(LOYALTY_ADDRESS, 'NEXT_PUBLIC_LOYALTY_ADDRESS');
+  return new ethers.Contract(address, COFFEE_LOYALTY_ABI, signerOrProvider);
+};
+
+export const getTokenContract = (signerOrProvider) => {
+  const address = requireAddress(TOKEN_ADDRESS, 'NEXT_PUBLIC_TOKEN_ADDRESS');
+  return new ethers.Contract(address, BREW_TOKEN_ABI, signerOrProvider);
+};
+
+export const getContractReadOnly = (provider) => getLoyaltyContract(provider);
 
 export const checkContractDeployed = async (provider) => {
   try {
-    const address = CONTRACT_ADDRESS;
+    const address = LOYALTY_ADDRESS;
     if (!address) {
       return false;
     }
@@ -23,54 +34,6 @@ export const checkContractDeployed = async (provider) => {
   } catch (error) {
     console.error('Error checking contract deployment:', error);
     return false;
-  }
-};
-
-export const getStampCount = async (address, provider) => {
-  if (!address || !provider) return 0;
-  try {
-    const contract = getContractReadOnly(provider);
-    const count = await contract.getStampCount(address);
-    return Number(count);
-  } catch (error) {
-    handleContractError(error, 'getStampCount');
-    return 0;
-  }
-};
-
-export const getRewardCount = async (address, provider) => {
-  if (!address || !provider) return 0;
-  try {
-    const contract = getContractReadOnly(provider);
-    const count = await contract.getRewardCount(address);
-    return Number(count);
-  } catch (error) {
-    handleContractError(error, 'getRewardCount');
-    return 0;
-  }
-};
-
-export const getRewardThreshold = async (provider) => {
-  if (!provider) return 0;
-  try {
-    const contract = getContractReadOnly(provider);
-    const threshold = await contract.rewardThreshold();
-    return Number(threshold);
-  } catch (error) {
-    handleContractError(error, 'getRewardThreshold');
-    return 0;
-  }
-};
-
-export const getCustomerNonce = async (address, provider) => {
-  if (!address || !provider) return 0;
-  try {
-    const contract = getContractReadOnly(provider);
-    const nonce = await contract.getCustomerNonce(address);
-    return Number(nonce);
-  } catch (error) {
-    handleContractError(error, 'getCustomerNonce');
-    return 0;
   }
 };
 
@@ -86,97 +49,182 @@ export const isOwner = async (address, provider) => {
   }
 };
 
-export const issueStamp = async ({ customerAddress, outletId, signaturePayload }, signer) => {
+export const getContractOwner = async (provider) => {
+  if (!provider) return null;
+  try {
+    const contract = getContractReadOnly(provider);
+    return await contract.owner();
+  } catch (error) {
+    console.error('Failed to fetch contract owner:', error);
+    return null;
+  }
+};
+
+export const getStampCount = async (address, provider) => {
+  if (!address || !provider) return 0;
+  try {
+    const contract = getContractReadOnly(provider);
+    const count = await contract.getStampCount(address);
+    return Number(count);
+  } catch (error) {
+    handleContractError(error, 'getStampCount');
+    return 0;
+  }
+};
+
+export const getPendingRewards = async (address, provider) => {
+  if (!address || !provider) return 0;
+  try {
+    const contract = getContractReadOnly(provider);
+    const count = await contract.getPendingRewards(address);
+    return Number(count);
+  } catch (error) {
+    handleContractError(error, 'getPendingRewards');
+    return 0;
+  }
+};
+
+export const getTotalVolume = async (address, provider) => {
+  if (!address || !provider) return 0n;
+  try {
+    const contract = getContractReadOnly(provider);
+    return await contract.getTotalVolume(address);
+  } catch (error) {
+    handleContractError(error, 'getTotalVolume');
+    return 0n;
+  }
+};
+
+export const getRewardThreshold = async (provider) => {
+  if (!provider) return 0;
+  try {
+    const contract = getContractReadOnly(provider);
+    const threshold = await contract.rewardThreshold();
+    return Number(threshold);
+  } catch (error) {
+    handleContractError(error, 'getRewardThreshold');
+    return 0;
+  }
+};
+
+export const getRewardTokenAmount = async (provider) => {
+  if (!provider) return 0n;
+  try {
+    const contract = getContractReadOnly(provider);
+    return await contract.rewardTokenAmount();
+  } catch (error) {
+    handleContractError(error, 'getRewardTokenAmount');
+    return 0n;
+  }
+};
+
+export const getTokenBalance = async (address, provider) => {
+  if (!address || !provider) return 0n;
+  try {
+    const token = getTokenContract(provider);
+    return await token.balanceOf(address);
+  } catch (error) {
+    console.error('Failed to fetch token balance:', error);
+    return 0n;
+  }
+};
+
+export const getTokenAllowance = async (ownerAddress, spender, provider) => {
+  if (!ownerAddress || !spender || !provider) return 0n;
+  try {
+    const token = getTokenContract(provider);
+    return await token.allowance(ownerAddress, spender);
+  } catch (error) {
+    console.error('Failed to fetch allowance:', error);
+    return 0n;
+  }
+};
+
+export const approveTokenSpending = async (spender, amount, signer) => {
   if (!signer) {
     throw new Error('Wallet signer is not available.');
   }
-  const contract = getContract(signer);
-  const tx = await contract.issueStamp(customerAddress, outletId, signaturePayload);
+  if (!spender) {
+    throw new Error('Spender address is required.');
+  }
+  const token = getTokenContract(signer);
+  const tx = await token.approve(spender, amount);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
 
-export const redeemReward = async (customerAddress, signer) => {
+export const buyCoffee = async ({ customerAddress, priceWei }, signer) => {
   if (!signer) {
     throw new Error('Wallet signer is not available.');
   }
-  const contract = getContract(signer);
+  const contract = getLoyaltyContract(signer);
+  const tx = await contract.buyCoffee(customerAddress, priceWei);
+  const receipt = await tx.wait();
+  return { hash: tx.hash, receipt };
+};
+
+export const redeemRewardOnChain = async (customerAddress, signer) => {
+  if (!signer) {
+    throw new Error('Wallet signer is not available.');
+  }
+  const contract = getLoyaltyContract(signer);
   const tx = await contract.redeemReward(customerAddress);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
 
-export const authorizeMerchant = async (merchantAddress, signer) => {
+export const fundRewardsOnChain = async (amountWei, signer) => {
   if (!signer) {
     throw new Error('Wallet signer is not available.');
   }
-  if (!ethers.isAddress(merchantAddress)) {
-    throw new Error('Merchant address must be a valid Ethereum address.');
-  }
-  const contract = getContract(signer);
-  const tx = await contract.authorizeMerchant(merchantAddress);
+  const contract = getLoyaltyContract(signer);
+  const tx = await contract.fundRewards(amountWei);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
 
-export const revokeMerchant = async (merchantAddress, signer) => {
+export const withdrawRewardsOnChain = async (to, amountWei, signer) => {
   if (!signer) {
     throw new Error('Wallet signer is not available.');
   }
-  if (!ethers.isAddress(merchantAddress)) {
-    throw new Error('Merchant address must be a valid Ethereum address.');
-  }
-  const contract = getContract(signer);
-  const tx = await contract.revokeMerchant(merchantAddress);
+  const contract = getLoyaltyContract(signer);
+  const tx = await contract.withdrawRewards(to, amountWei);
   const receipt = await tx.wait();
   return { hash: tx.hash, receipt };
 };
 
-export const isMerchantAuthorizedOnChain = async (merchantAddress, provider) => {
-  if (!merchantAddress || !provider) return false;
-  try {
-    const contract = getContractReadOnly(provider);
-    const authorized = await contract.isMerchantAuthorized(merchantAddress);
-    return Boolean(authorized);
-  } catch (error) {
-    console.error('Error checking merchant authorization:', error);
-    return false;
-  }
-};
-
-export const getTransactionHistory = async (address, provider, fromBlock = 0) => {
+export const getEventHistory = async (address, provider, fromBlock = 0) => {
   const contract = getContractReadOnly(provider);
   const history = [];
 
   try {
-    const stampIssuedFilter = contract.filters.StampIssued(address);
-    const rewardGrantedFilter = contract.filters.RewardGranted(address);
+    const purchasesFilter = contract.filters.CoffeePurchased(address);
+    const rewardEarnedFilter = contract.filters.RewardEarned(address);
     const rewardRedeemedFilter = contract.filters.RewardRedeemed(address);
 
-    const [stampsIssued, rewardsGranted, rewardsRedeemed] = await Promise.all([
-      contract.queryFilter(stampIssuedFilter, fromBlock),
-      contract.queryFilter(rewardGrantedFilter, fromBlock),
+    const [purchases, rewardsEarned, rewardsRedeemed] = await Promise.all([
+      contract.queryFilter(purchasesFilter, fromBlock),
+      contract.queryFilter(rewardEarnedFilter, fromBlock),
       contract.queryFilter(rewardRedeemedFilter, fromBlock),
     ]);
 
-    stampsIssued.forEach((event) => {
+    purchases.forEach((event) => {
       history.push({
-        type: 'stamp_issued',
+        type: 'purchase',
         blockNumber: event.blockNumber,
         transactionHash: event.transactionHash,
-        outletId: Number(event.args.outletId),
-        stampCount: Number(event.args.totalStamps),
-        timestamp: event.blockTimestamp ? new Date(Number(event.blockTimestamp) * 1000) : new Date(),
+        price: event.args.priceInTokens,
+        timestamp: event.blockTimestamp ? Number(event.blockTimestamp) * 1000 : undefined,
       });
     });
 
-    rewardsGranted.forEach((event) => {
+    rewardsEarned.forEach((event) => {
       history.push({
-        type: 'reward_granted',
+        type: 'reward_earned',
         blockNumber: event.blockNumber,
         transactionHash: event.transactionHash,
-        rewardCount: Number(event.args.rewardCount),
-        timestamp: event.blockTimestamp ? new Date(Number(event.blockTimestamp) * 1000) : new Date(),
+        pendingRewards: Number(event.args.totalPendingRewards),
+        timestamp: event.blockTimestamp ? Number(event.blockTimestamp) * 1000 : undefined,
       });
     });
 
@@ -186,14 +234,15 @@ export const getTransactionHistory = async (address, provider, fromBlock = 0) =>
         blockNumber: event.blockNumber,
         transactionHash: event.transactionHash,
         remainingRewards: Number(event.args.remainingRewards),
-        timestamp: event.blockTimestamp ? new Date(Number(event.blockTimestamp) * 1000) : new Date(),
+        payoutAmount: event.args.payoutAmount,
+        timestamp: event.blockTimestamp ? Number(event.blockTimestamp) * 1000 : undefined,
       });
     });
 
     history.sort((a, b) => b.blockNumber - a.blockNumber);
     return history;
   } catch (error) {
-    console.error('Error getting transaction history:', error);
+    console.error('Error getting event history:', error);
     return [];
   }
 };

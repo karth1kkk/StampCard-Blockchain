@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize Supabase client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const DEFAULT_REWARD_THRESHOLD = Number(process.env.REWARD_THRESHOLD || process.env.NEXT_PUBLIC_REWARD_THRESHOLD || 8);
 
 let supabase = null;
 
@@ -12,114 +12,292 @@ if (supabaseUrl && supabaseKey) {
   console.warn('Supabase credentials not found. Database operations will be limited.');
 }
 
-// Customer operations
-export const getCustomer = async (address) => {
+const requireSupabase = () => {
   if (!supabase) {
-    console.warn('Supabase not initialized');
-    return null;
+    throw new Error('Supabase client is not initialised');
   }
-  
-  const { data, error } = await supabase
+  return supabase;
+};
+
+const normaliseAddress = (address) => (typeof address === 'string' ? address.toLowerCase() : '').trim();
+
+const parseNumeric = (value) => {
+  if (value === null || value === undefined) {
+    return 0;
+  }
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+export const getCustomerSummary = async (address) => {
+  const client = requireSupabase();
+  const wallet = normaliseAddress(address);
+  if (!wallet) {
+    throw new Error('wallet address required');
+  }
+
+  const { data, error } = await client
     .from('customers')
+    .select('wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, created_at, updated_at')
+    .eq('wallet_address', wallet)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
+    console.error('Error fetching customer summary:', error);
+    throw error;
+  }
+
+  return (
+    data || {
+      wallet_address: wallet,
+      stamp_count: 0,
+      pending_rewards: 0,
+      total_volume: 0,
+      last_purchase_at: null,
+    }
+  );
+};
+
+export const listCustomers = async () => {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from('customers')
+    .select('wallet_address, stamp_count, pending_rewards, total_volume, last_purchase_at, updated_at, created_at')
+    .order('updated_at', { ascending: false })
+    .limit(250);
+
+  if (error) {
+    console.error('Error listing customers:', error);
+    throw error;
+  }
+
+  return data || [];
+};
+
+export const recordPurchase = async ({
+  walletAddress,
+  productId,
+  productName,
+  priceBWT,
+  txHash,
+  blockNumber,
+  outletId,
+  metadata,
+  rewardThreshold = DEFAULT_REWARD_THRESHOLD,
+  stampsAwarded = 1,
+}) => {
+  const client = requireSupabase();
+  const wallet = normaliseAddress(walletAddress);
+  if (!wallet) {
+    throw new Error('wallet address required');
+  }
+  if (!txHash) {
+    throw new Error('transaction hash required');
+  }
+
+  const now = new Date().toISOString();
+  const price = parseNumeric(priceBWT);
+  const threshold = Number(rewardThreshold) || DEFAULT_REWARD_THRESHOLD;
+
+  const { data: existing, error: fetchError } = await client
+    .from('customers')
+    .select('stamp_count, pending_rewards, total_volume')
+    .eq('wallet_address', wallet)
+    .maybeSingle();
+
+  if (fetchError && fetchError.code !== 'PGRST116') {
+    console.error('Error loading customer counters:', fetchError);
+    throw fetchError;
+  }
+
+  let currentStamp = existing?.stamp_count ?? 0;
+  let pendingRewards = existing?.pending_rewards ?? 0;
+  const currentVolume = parseNumeric(existing?.total_volume);
+
+  currentStamp += Number(stampsAwarded);
+  let rewardEarned = false;
+
+  while (currentStamp >= threshold) {
+    currentStamp -= threshold;
+    pendingRewards += 1;
+    rewardEarned = true;
+  }
+
+  const totalVolume = currentVolume + price;
+
+  const upsertPayload = {
+    wallet_address: wallet,
+    stamp_count: currentStamp,
+    pending_rewards: pendingRewards,
+    total_volume: totalVolume,
+    last_purchase_at: now,
+    updated_at: now,
+    created_at: existing?.created_at || now,
+  };
+
+  const { error: upsertError } = await client
+    .from('customers')
+    .upsert(upsertPayload, { onConflict: 'wallet_address' });
+
+  if (upsertError) {
+    console.error('Error updating customer counters:', upsertError);
+    throw upsertError;
+  }
+
+  const { error: insertPurchaseError } = await client.from('purchase_history').insert({
+    wallet_address: wallet,
+    product_id: productId,
+    product_name: productName,
+    price_bwt: price,
+    tx_hash: txHash,
+    block_number: blockNumber,
+    outlet_id: outletId,
+    metadata: metadata || null,
+    created_at: now,
+  });
+
+  if (insertPurchaseError && insertPurchaseError.code !== '23505') {
+    console.error('Error recording purchase:', insertPurchaseError);
+    throw insertPurchaseError;
+  }
+
+  return {
+    wallet_address: wallet,
+    stamp_count: currentStamp,
+    pending_rewards: pendingRewards,
+    total_volume: totalVolume,
+    rewardEarned,
+    last_purchase_at: now,
+  };
+};
+
+export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumber, rewardAmountBWT }) => {
+  const client = requireSupabase();
+  const wallet = normaliseAddress(walletAddress);
+  if (!wallet) {
+    throw new Error('wallet address required');
+  }
+
+  const { data: existing, error } = await client
+    .from('customers')
+    .select('pending_rewards')
+    .eq('wallet_address', wallet)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
+    console.error('Error loading customer rewards:', error);
+    throw error;
+  }
+
+  const pending = existing?.pending_rewards ?? 0;
+  if (pending <= 0) {
+    throw new Error('No pending rewards to redeem');
+  }
+
+  const now = new Date().toISOString();
+  const { error: updateError } = await client
+    .from('customers')
+    .update({ pending_rewards: pending - 1, updated_at: now })
+    .eq('wallet_address', wallet);
+
+  if (updateError) {
+    console.error('Error updating reward count:', updateError);
+    throw updateError;
+  }
+
+  const { error: insertError } = await client.from('reward_history').insert({
+    wallet_address: wallet,
+    reward_amount_bwt: parseNumeric(rewardAmountBWT),
+    tx_hash: txHash || null,
+    block_number: blockNumber || null,
+    created_at: now,
+  });
+
+  if (insertError) {
+    console.error('Error recording reward redemption:', insertError);
+    throw insertError;
+  }
+
+  return {
+    wallet_address: wallet,
+    pending_rewards: pending - 1,
+    redeemed_at: now,
+  };
+};
+
+export const getPurchaseHistory = async (walletAddress, limit = 50) => {
+  const client = requireSupabase();
+  const wallet = normaliseAddress(walletAddress);
+  const query = client
+    .from('purchase_history')
     .select('*')
-    .eq('address', address.toLowerCase())
-    .single();
-  
-  if (error && error.code !== 'PGRST116') { // PGRST116 = not found
-    console.error('Error getting customer:', error);
-    return null;
-  }
-  
-  return data;
-};
+    .order('created_at', { ascending: false })
+    .limit(limit);
 
-export const createCustomer = async (address, name, email, phone) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return { changes: 0 };
+  if (wallet) {
+    query.eq('wallet_address', wallet);
   }
-  
-  const { data, error } = await supabase
-    .from('customers')
-    .upsert({
-      address: address.toLowerCase(),
-      name,
-      email,
-      phone,
-      created_at: new Date().toISOString()
-    }, {
-      onConflict: 'address'
-    });
-  
+
+  const { data, error } = await query;
   if (error) {
-    console.error('Error creating customer:', error);
-    return { changes: 0 };
+    console.error('Error fetching purchase history:', error);
+    throw error;
   }
-  
-  return { changes: 1 };
+
+  return data || [];
 };
 
-export const updateCustomer = async (address, name, email, phone) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return { changes: 0 };
+export const getRewardHistory = async (walletAddress, limit = 25) => {
+  const client = requireSupabase();
+  const wallet = normaliseAddress(walletAddress);
+  const query = client
+    .from('reward_history')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (wallet) {
+    query.eq('wallet_address', wallet);
   }
-  
-  const { data, error } = await supabase
-    .from('customers')
-    .update({
-      name,
-      email,
-      phone
-    })
-    .eq('address', address.toLowerCase());
-  
+
+  const { data, error } = await query;
   if (error) {
-    console.error('Error updating customer:', error);
-    return { changes: 0 };
+    console.error('Error fetching reward history:', error);
+    throw error;
   }
-  
-  return { changes: data?.length || 0 };
+
+  return data || [];
 };
 
-// Outlet operations
 export const getOutlets = async () => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return [];
-  }
-  
-  const { data, error } = await supabase
+  const client = requireSupabase();
+  const { data, error } = await client
     .from('outlets')
     .select('*')
     .order('created_at', { ascending: false });
-  
+
   if (error) {
     console.error('Error getting outlets:', error);
-    return [];
+    throw error;
   }
-  
+
   return data || [];
 };
 
 export const getOutlet = async (id) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return null;
-  }
-  
-  const { data, error } = await supabase
+  const client = requireSupabase();
+  const { data, error } = await client
     .from('outlets')
     .select('*')
     .eq('id', id)
-    .single();
-  
-  if (error) {
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
     console.error('Error getting outlet:', error);
-    return null;
+    throw error;
   }
-  
-  return data;
+
+  return data || null;
 };
 
 export const createOutlet = async ({
@@ -132,99 +310,27 @@ export const createOutlet = async ({
   challengeUrl,
   signerPublicKey,
 }) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return { lastInsertRowid: null };
-  }
-  
-  const { data, error } = await supabase
+  const client = requireSupabase();
+  const { data, error } = await client
     .from('outlets')
     .insert({
       name,
       address,
       owner_address: ownerAddress,
-       merchant_address: merchantAddress,
-       location,
-       website,
-       challenge_url: challengeUrl,
-       signer_public_key: signerPublicKey,
-      created_at: new Date().toISOString()
+      merchant_address: merchantAddress,
+      location,
+      website,
+      challenge_url: challengeUrl,
+      signer_public_key: signerPublicKey,
+      created_at: new Date().toISOString(),
     })
     .select()
     .single();
-  
+
   if (error) {
     console.error('Error creating outlet:', error);
-    return { lastInsertRowid: null };
+    throw error;
   }
-  
+
   return { lastInsertRowid: data?.id || null };
-};
-
-// Transaction operations
-export const saveTransaction = async (customerAddress, transactionHash, transactionType, blockNumber) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return { changes: 0 };
-  }
-  
-  const { data, error } = await supabase
-    .from('transactions')
-    .upsert({
-      customer_address: customerAddress.toLowerCase(),
-      transaction_hash: transactionHash,
-      transaction_type: transactionType,
-      block_number: blockNumber,
-      created_at: new Date().toISOString()
-    }, {
-      onConflict: 'transaction_hash'
-    });
-  
-  if (error) {
-    console.error('Error saving transaction:', error);
-    return { changes: 0 };
-  }
-  
-  return { changes: 1 };
-};
-
-export const getCustomerTransactions = async (customerAddress) => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return [];
-  }
-  
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .eq('customer_address', customerAddress.toLowerCase())
-    .order('created_at', { ascending: false })
-    .limit(50);
-  
-  if (error) {
-    console.error('Error getting customer transactions:', error);
-    return [];
-  }
-  
-  return data || [];
-};
-
-export const getAllTransactions = async () => {
-  if (!supabase) {
-    console.warn('Supabase not initialized');
-    return [];
-  }
-  
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(100);
-  
-  if (error) {
-    console.error('Error getting all transactions:', error);
-    return [];
-  }
-  
-  return data || [];
 };

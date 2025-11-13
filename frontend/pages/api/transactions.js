@@ -1,23 +1,24 @@
-import { saveTransaction, getCustomerTransactions, getAllTransactions } from '../../lib/db';
+import { getPurchaseHistory, getRewardHistory } from '../../lib/db';
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     const { address } = req.query;
-    if (address) {
-      const transactions = await getCustomerTransactions(address);
-      return res.status(200).json(transactions);
-    }
-    const transactions = await getAllTransactions();
-    return res.status(200).json(transactions);
-  }
 
-  if (req.method === 'POST') {
-    const { customerAddress, transactionHash, transactionType, blockNumber } = req.body;
-    if (!customerAddress || !transactionHash || !transactionType) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    try {
+      if (address) {
+        const [purchases, rewards] = await Promise.all([
+          getPurchaseHistory(address, 50),
+          getRewardHistory(address, 25),
+        ]);
+        return res.status(200).json({ purchases, rewards });
+      }
+
+      const purchases = await getPurchaseHistory(null, 100);
+      return res.status(200).json({ purchases });
+    } catch (error) {
+      console.error('Transactions API error:', error);
+      return res.status(500).json({ error: error?.message || 'Unable to load transactions' });
     }
-    await saveTransaction(customerAddress, transactionHash, transactionType, blockNumber);
-    return res.status(200).json({ success: true });
   }
 
   return res.status(405).json({ error: 'Method not allowed' });

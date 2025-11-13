@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import Head from 'next/head';
 import dynamic from 'next/dynamic';
 import { toast } from 'react-toastify';
+import { ethers } from 'ethers';
 import { useWallet } from '../../context/WalletContext';
-import { issueStamp } from '../../lib/web3';
+import { transferTokens } from '../../lib/web3';
 
 const QrScanner = dynamic(
   () => import('@yudiel/react-qr-scanner').then((mod) => mod.Scanner),
@@ -14,62 +15,32 @@ const decodePayload = (rawValue) => {
   if (!rawValue) return null;
   try {
     const parsed = JSON.parse(rawValue);
-    if (parsed?.type !== 'STAMP_CHALLENGE') return null;
-    if (!parsed.outletId || !parsed.challengeUrl || !parsed.merchantAddress) return null;
-    return {
-      outletId: Number(parsed.outletId),
-      challengeUrl: parsed.challengeUrl,
-      merchantAddress: parsed.merchantAddress,
-      businessName: parsed.businessName || 'Merchant',
-      location: parsed.location || 'Unknown location',
-      website: parsed.website || null,
-    };
+    if (parsed?.type === 'BWT_PURCHASE') {
+      if (!parsed.to || !parsed.amount || !parsed.tokenAddress) return null;
+      return {
+        mode: 'purchase',
+        to: parsed.to,
+        amount: parsed.amount,
+        tokenAddress: parsed.tokenAddress,
+        tokenSymbol: parsed.tokenSymbol || 'BWT',
+        chainId: parsed.chainId,
+        decimals: parsed.decimals || 18,
+        product: parsed.product || null,
+      };
+    }
+    return null;
   } catch (error) {
     console.warn('Unable to decode QR payload:', error);
     return null;
   }
 };
 
-const BusinessInfo = ({ businessName, location, website }) => (
-  <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-xl shadow-slate-900/40 backdrop-blur-xl">
-    <h3 className="text-lg font-semibold text-white">Business Info</h3>
-    <dl className="mt-4 space-y-3 text-sm text-slate-200">
-      <div className="grid gap-1">
-        <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Name</dt>
-        <dd>{businessName}</dd>
-      </div>
-      <div className="grid gap-1">
-        <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Location (Address)</dt>
-        <dd>{location}</dd>
-      </div>
-      <div className="grid gap-1">
-        <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Website</dt>
-        <dd>
-          {website ? (
-            <a
-              href={website}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-300 underline decoration-dotted underline-offset-4 hover:text-blue-100"
-            >
-              {website}
-            </a>
-          ) : (
-            'Not provided'
-          )}
-        </dd>
-      </div>
-    </dl>
-  </div>
-);
-
 export default function CustomerScanPage() {
   const { customerAddress, customerSigner, isCorrectNetwork, ensureCorrectNetwork } = useWallet();
   const [scannerActive, setScannerActive] = useState(false);
   const [cameraError, setCameraError] = useState('');
-  const [challenge, setChallenge] = useState(null);
-  const [isRequesting, setIsRequesting] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [paymentRequest, setPaymentRequest] = useState(null);
+  const [isPaying, setIsPaying] = useState(false);
 
   useEffect(() => {
     setCameraError('');
@@ -83,16 +54,20 @@ export default function CustomerScanPage() {
 
       const decoded = decodePayload(value);
       if (!decoded) {
-        setCameraError('Unrecognised StampCard QR payload. Ask the merchant for a valid code.');
+        setCameraError('Unrecognised BrewToken QR payload. Ask the barista for a fresh code.');
         return;
       }
 
-      setChallenge(decoded);
+      setPaymentRequest(decoded);
       setScannerActive(false);
       setCameraError('');
-      toast.success(`Merchant ${decoded.businessName} detected.`);
+      toast.success(
+        decoded.product?.name
+          ? `Purchase detected: ${decoded.product.name}`
+          : 'BrewToken payment detected.'
+      );
     },
-    [setChallenge]
+    []
   );
 
   const handleError = useCallback((error) => {
@@ -101,16 +76,19 @@ export default function CustomerScanPage() {
   }, []);
 
   const resetState = () => {
-    setChallenge(null);
-    setIsRequesting(false);
-    setIsSubmitting(false);
+    setPaymentRequest(null);
+    setIsPaying(false);
     setCameraError('');
     setScannerActive(false);
   };
 
-  const requestStamp = async () => {
+  const executePayment = async () => {
     if (!customerAddress || !customerSigner) {
-      toast.error('Connect your wallet before requesting a stamp.');
+      toast.error('Connect your wallet before sending tokens.');
+      return;
+    }
+    if (!paymentRequest) {
+      toast.error('Scan a BrewToken QR code first.');
       return;
     }
     if (!isCorrectNetwork) {
@@ -121,63 +99,50 @@ export default function CustomerScanPage() {
         return;
       }
     }
-    if (!challenge) {
-      toast.error('Scan a merchant QR code first.');
-      return;
-    }
 
-    setIsRequesting(true);
+    setIsPaying(true);
     try {
-      const url = new URL(challenge.challengeUrl, window.location.origin);
-      url.searchParams.set('customer', customerAddress);
-      url.searchParams.set('outletId', challenge.outletId.toString());
-      url.searchParams.set('merchant', challenge.merchantAddress);
+      const amount = ethers.parseUnits(paymentRequest.amount.toString(), paymentRequest.decimals);
+      const { hash, receipt } = await transferTokens(paymentRequest.to, amount, customerSigner);
+      toast.success(`Payment sent. Tx: ${hash.slice(0, 10)}…`);
 
-      const response = await fetch(url.toString(), { method: 'GET' });
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({}));
-        throw new Error(errorBody?.error || 'Merchant challenge request failed.');
-      }
+      const payload = {
+        address: customerAddress,
+        productId: paymentRequest.product?.id,
+        productName: paymentRequest.product?.name,
+        priceBWT: paymentRequest.amount,
+        txHash: hash,
+        blockNumber: receipt?.blockNumber || null,
+        metadata: paymentRequest.product || null,
+      };
 
-      const { signature, nonce } = await response.json();
-      if (!signature) {
-        throw new Error('Challenge payload missing signature.');
-      }
+      await fetch('/api/stamps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch((error) => console.error('Failed to sync purchase', error));
 
-      setIsRequesting(false);
-      setIsSubmitting(true);
-
-      const { hash } = await issueStamp(
-        {
-          customerAddress,
-          outletId: challenge.outletId,
-          signaturePayload: signature,
-        },
-        customerSigner
-      );
-
-      toast.success(`Stamp requested. Tx: ${hash.slice(0, 10)}…`);
+      setPaymentRequest(null);
     } catch (error) {
-      console.error('Stamp request failed:', error);
-      toast.error(error?.shortMessage || error?.message || 'Request failed');
+      console.error('Token payment failed:', error);
+      toast.error(error?.shortMessage || error?.message || 'Payment failed');
     } finally {
-      setIsRequesting(false);
-      setIsSubmitting(false);
+      setIsPaying(false);
     }
   };
 
   return (
     <>
       <Head>
-        <title>StampCard - Customer Scan</title>
+        <title>Scan &amp; Pay · BrewToken Coffee Loyalty</title>
       </Head>
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 py-10 sm:px-6 lg:px-8">
         <div className="flex flex-col gap-3">
           <p className="text-xs uppercase tracking-[0.4em] text-blue-200">Customer Flow</p>
           <h1 className="text-3xl font-semibold text-white sm:text-4xl">Scan Merchant QR</h1>
           <p className="text-sm text-slate-300">
-            Scan the QR displayed at the merchant&apos;s outlet. This generates a merchant-signed
-            challenge and prompts your wallet to mint a stamp on-chain.
+            Align the QR code with your camera. We detect BrewToken purchases and auto-sync your stamp progress
+            once the payment confirms on-chain.
           </p>
         </div>
 
@@ -192,8 +157,8 @@ export default function CustomerScanPage() {
                 <div>
                   <h2 className="text-2xl font-semibold text-white">QR Scanner</h2>
                   <p className="mt-2 text-sm text-slate-300">
-                    Align the merchant&apos;s StampCard QR within the frame. We automatically fetch
-                    the signed challenge tied to your wallet.
+                    Use your phone&apos;s camera to scan BrewToken payment codes at the counter. We take care of the
+                    token transfer and stamp update automatically.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
@@ -238,43 +203,51 @@ export default function CustomerScanPage() {
                     </div>
                   </div>
                   <p className="mt-3 text-xs text-slate-400">
-                    If the merchant QR fails to scan, ensure it belongs to the StampCard network or
-                    request a fresh code from the staff.
+                    If scanning fails, ensure the QR belongs to the BrewToken loyalty network or request a new code
+                    from the barista.
                   </p>
                 </div>
               ) : null}
             </div>
 
-            {challenge ? (
-              <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-                <BusinessInfo
-                  businessName={challenge.businessName}
-                  location={challenge.location}
-                  website={challenge.website}
-                />
-                <div className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-6 shadow-xl shadow-emerald-900/40 backdrop-blur-xl">
-                  <h3 className="text-lg font-semibold text-white">Ready to request a stamp</h3>
-                  <p className="mt-2 text-sm text-emerald-100/80">
-                    We&apos;ll fetch a merchant signature for outlet{' '}
-                    <span className="font-semibold">#{challenge.outletId}</span>. After approval, your
-                    wallet will submit the on-chain transaction.
-                  </p>
-                  <button
-                    onClick={requestStamp}
-                    disabled={isRequesting || isSubmitting}
-                    className="mt-6 w-full rounded-full bg-gradient-to-r from-emerald-300 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-widest text-slate-900 shadow-lg shadow-emerald-400/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isSubmitting
-                      ? 'Submitting transaction…'
-                      : isRequesting
-                      ? 'Fetching signature…'
-                      : 'Sign & Mint Stamp'}
-                  </button>
-                  <p className="mt-3 text-xs text-emerald-100/80">
-                    Your wallet must sign the transfer. Ensure you have network funds to cover gas
-                    fees.
-                  </p>
-                </div>
+            {paymentRequest ? (
+              <div className="rounded-3xl border border-purple-400/40 bg-purple-500/10 p-6 shadow-xl shadow-purple-900/40 backdrop-blur-xl">
+                <h3 className="text-lg font-semibold text-white">
+                  {paymentRequest.product?.name ? `Purchase · ${paymentRequest.product.name}` : 'BWT Payment Request'}
+                </h3>
+                <dl className="mt-4 grid gap-3 text-sm text-purple-100/90">
+                  <div>
+                    <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Recipient</dt>
+                    <dd className="font-mono text-xs text-white/80">{paymentRequest.to}</dd>
+                  </div>
+                  {paymentRequest.product?.description ? (
+                    <div>
+                      <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Drink</dt>
+                      <dd>{paymentRequest.product.description}</dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Amount</dt>
+                    <dd>
+                      {paymentRequest.amount} {paymentRequest.tokenSymbol}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase tracking-[0.3em] text-white/60">Token</dt>
+                    <dd className="font-mono text-xs text-white/80">{paymentRequest.tokenAddress}</dd>
+                  </div>
+                </dl>
+                <button
+                  onClick={executePayment}
+                  disabled={isPaying}
+                  className="mt-6 w-full rounded-full bg-gradient-to-r from-purple-400 via-pink-300 to-rose-300 px-6 py-3 text-xs font-semibold uppercase tracking-widest text-slate-900 shadow-lg shadow-purple-500/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isPaying ? 'Sending…' : 'Pay with MetaMask'}
+                </button>
+                <p className="mt-3 text-xs text-purple-100/80">
+                  Confirm the BrewToken transfer in MetaMask. Once the transaction is complete, your stamp balance will
+                  update automatically.
+                </p>
               </div>
             ) : null}
           </>
