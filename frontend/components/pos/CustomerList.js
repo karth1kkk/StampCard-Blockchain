@@ -3,8 +3,9 @@ import { toast } from 'react-toastify';
 import { ethers } from 'ethers';
 import { useWallet } from '../../context/WalletContext';
 import { redeemRewardOnChain, getPendingRewards, getRewardTokenAmount, getTokenContract, getStampCount } from '../../lib/web3';
+import StampCard from './StampCard';
 
-export default function CustomerList({ accessToken, onRefreshRequested }) {
+export default function CustomerList({ accessToken, onRefreshRequested, refreshToken }) {
   const { customerSigner, ensureCorrectNetwork, isCorrectNetwork, isConnecting, isOwner, customerAddress, merchantAddress } = useWallet();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -25,7 +26,20 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
         throw new Error((await response.json())?.error || 'Unable to load customer list');
       }
       const payload = await response.json();
-      setCustomers(payload.customers || []);
+      const customersList = payload.customers || [];
+      console.log('CustomerList: Fetched customers:', {
+        count: customersList.length,
+        timestamp: new Date().toISOString(),
+        customers: customersList.map((c) => ({
+          wallet: c.customer_wallet || c.wallet_address,
+          stampCount: c.stamp_count,
+          pendingRewards: c.pending_rewards,
+          rewardThreshold: c.reward_threshold,
+          lifetimeStamps: c.lifetime_stamps,
+          email: c.email,
+        })),
+      });
+      setCustomers(customersList);
     } catch (error) {
       console.error('Customer list error:', error);
       toast.error(error?.message || 'Unable to load customers');
@@ -36,7 +50,7 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
 
   useEffect(() => {
     fetchCustomers();
-  }, [fetchCustomers]);
+  }, [fetchCustomers, refreshToken]); // Also refresh when refreshToken changes
 
   const totalStats = useMemo(() => {
     return customers.reduce(
@@ -134,8 +148,10 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
           if (rewardPoolBalance < rewardTokenAmount) {
             const requiredAmount = ethers.formatUnits(rewardTokenAmount, 18);
             const availableAmount = ethers.formatUnits(rewardPoolBalance, 18);
+            const shortAddress = `${LOYALTY_ADDRESS.slice(0, 6)}…${LOYALTY_ADDRESS.slice(-4)}`;
             toast.error(
-              `Insufficient reward pool balance. Required: ${requiredAmount} BWT, Available: ${availableAmount} BWT. Please fund the reward pool first.`
+              `The reward pool (contract ${shortAddress}) is empty. Required: ${requiredAmount} BWT, Available: ${availableAmount} BWT. The contract needs BWT tokens to pay rewards. Use the "Fund Pool" button in the POS dashboard to transfer BWT to the contract.`,
+              { autoClose: 8000 }
             );
             return;
           }
@@ -149,23 +165,52 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
           `Reward redeemed for ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)} — tx ${hash.slice(0, 10)}…`
         );
         
-        // Sync to Supabase
-        await fetch('/api/stamps', {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            address: walletAddress,
-            txHash: hash,
-            blockNumber: receipt?.blockNumber || null,
-            rewardAmountBWT: rewardTokenAmount > 0n ? ethers.formatUnits(rewardTokenAmount, 18) : null,
-          }),
-        }).catch((error) => {
-          console.error('Failed to sync reward redemption to Supabase:', error);
-          // Don't show error to user if on-chain redemption succeeded
-        });
+        // Fetch on-chain values after redemption to sync with database
+        try {
+          const [onChainStampCount, onChainPendingRewards] = await Promise.all([
+            getStampCount(walletAddress, provider),
+            getPendingRewards(walletAddress, provider),
+          ]);
+
+          // Sync to Supabase with on-chain values
+          await fetch('/api/stamps', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              address: walletAddress,
+              txHash: hash,
+              blockNumber: receipt?.blockNumber || null,
+              rewardAmountBWT: rewardTokenAmount > 0n ? ethers.formatUnits(rewardTokenAmount, 18) : null,
+              stampCount: Number(onChainStampCount),
+              pendingRewards: Number(onChainPendingRewards),
+            }),
+          }).catch((error) => {
+            console.error('Failed to sync reward redemption to Supabase:', error);
+            toast.warning('Redemption successful on-chain, but database sync failed. The database may be out of sync.');
+          });
+        } catch (syncError) {
+          console.error('Failed to fetch on-chain values after redemption:', syncError);
+          // Still try to update database without on-chain values
+          await fetch('/api/stamps', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              address: walletAddress,
+              txHash: hash,
+              blockNumber: receipt?.blockNumber || null,
+              rewardAmountBWT: rewardTokenAmount > 0n ? ethers.formatUnits(rewardTokenAmount, 18) : null,
+            }),
+          }).catch((error) => {
+            console.error('Failed to sync reward redemption to Supabase:', error);
+            toast.warning('Redemption successful on-chain, but database sync failed.');
+          });
+        }
         
         // Refresh customer list
         await fetchCustomers();
@@ -306,7 +351,7 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
               <tr className="text-left text-xs uppercase tracking-[0.3em] text-white/50">
                 <th className="px-4 py-2">Customer</th>
                 <th className="px-4 py-2">Email</th>
-                <th className="px-4 py-2">Stamp Count</th>
+                <th className="px-4 py-2">Stamp Card</th>
                 <th className="px-4 py-2">Pending Rewards</th>
                 <th className="px-4 py-2">Reward Eligible</th>
                 <th className="px-4 py-2">Last Updated</th>
@@ -314,22 +359,55 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/10">
-              {customers.map((customer) => {
-                const wallet = customer.customer_wallet || customer.wallet_address;
-                const pending = Number(customer.pending_rewards || 0);
-                const rewardEligible = customer.reward_eligible || pending > 0;
-                const stampCount = Number(customer.stamp_count || 0);
-                const lastUpdated = customer.last_updated
-                  ? new Date(customer.last_updated).toLocaleString()
-                  : '—';
-                const shortWallet = wallet
-                  ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}`
-                  : 'Unknown';
-                return (
-                  <tr key={wallet}>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-100">{shortWallet}</td>
-                    <td className="px-4 py-3 text-xs text-slate-300">{customer.email || '—'}</td>
-                    <td className="px-4 py-3">{stampCount}</td>
+              {(() => {
+                // Deduplicate customers by wallet address (keep the most recent one)
+                const uniqueCustomers = new Map();
+                customers.forEach((customer) => {
+                  const wallet = (customer.customer_wallet || customer.wallet_address)?.toLowerCase();
+                  if (!wallet) return;
+                  
+                  const existing = uniqueCustomers.get(wallet);
+                  if (!existing || new Date(customer.last_updated || 0) > new Date(existing.last_updated || 0)) {
+                    uniqueCustomers.set(wallet, customer);
+                  }
+                });
+                
+                return Array.from(uniqueCustomers.values()).map((customer) => {
+                  const wallet = customer.customer_wallet || customer.wallet_address;
+                  const pending = Number(customer.pending_rewards || 0);
+                  const rewardEligible = customer.reward_eligible || pending > 0;
+                  const stampCount = Number(customer.stamp_count || 0);
+                  const lifetimeStamps = Number(customer.lifetime_stamps || 0);
+                  const rewardThreshold = Number(customer.reward_threshold || process.env.NEXT_PUBLIC_REWARD_THRESHOLD || 8);
+                  const lastUpdated = customer.last_updated
+                    ? new Date(customer.last_updated).toLocaleString()
+                    : '—';
+                  const shortWallet = wallet
+                    ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}`
+                    : 'Unknown';
+                  
+                  // Calculate which card number they're on (1st, 2nd, 3rd, etc.)
+                  // Cards completed = pending rewards
+                  // Current card number = cards completed + 1
+                  const cardsCompleted = pending;
+                  const currentCardNumber = cardsCompleted + 1;
+                  
+                  return (
+                    <tr key={wallet}>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-100">{shortWallet}</td>
+                      <td className="px-4 py-3 text-xs text-slate-300">{customer.email || '—'}</td>
+                      <td className="px-4 py-3">
+                        <div className="w-64">
+                          <StampCard
+                            stampCount={stampCount}
+                            pendingRewards={pending}
+                            rewardThreshold={rewardThreshold}
+                            cardsCompleted={cardsCompleted}
+                            currentCardNumber={currentCardNumber}
+                            lifetimeStamps={lifetimeStamps}
+                          />
+                        </div>
+                      </td>
                     <td className="px-4 py-3">{pending}</td>
                     <td className="px-4 py-3">
                       <span
@@ -368,8 +446,9 @@ export default function CustomerList({ accessToken, onRefreshRequested }) {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+                  );
+                });
+              })()}
             </tbody>
           </table>
         </div>

@@ -5,6 +5,8 @@ import { toast } from 'react-toastify';
 import { BREW_TOKEN_SYMBOL } from '../../lib/constants';
 import { transferTokensOnChain, getTokenBalance } from '../../lib/web3';
 
+const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
+
 const formatAmount = (value) => {
   const amount = Number(value || 0);
   if (Number.isNaN(amount)) return '0.00';
@@ -21,9 +23,14 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
   const [error, setError] = useState('');
 
   // Set default recipient address when modal opens
+  // Default to contract address (reward pool) if available, otherwise use customerAddress
   useEffect(() => {
-    if (isOpen && customerAddress) {
-      setRecipientAddress(customerAddress);
+    if (isOpen) {
+      if (LOYALTY_ADDRESS) {
+        setRecipientAddress(LOYALTY_ADDRESS);
+      } else if (customerAddress) {
+        setRecipientAddress(customerAddress);
+      }
     }
   }, [isOpen, customerAddress]);
 
@@ -92,7 +99,9 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
       // Close modal and reset form
       onClose();
       setAmount('200');
-      if (customerAddress) {
+      if (LOYALTY_ADDRESS) {
+        setRecipientAddress(LOYALTY_ADDRESS);
+      } else if (customerAddress) {
         setRecipientAddress(customerAddress);
       }
       setError('');
@@ -120,7 +129,9 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
     if (!isTransferring) {
       setError('');
       setAmount('200');
-      if (customerAddress) {
+      if (LOYALTY_ADDRESS) {
+        setRecipientAddress(LOYALTY_ADDRESS);
+      } else if (customerAddress) {
         setRecipientAddress(customerAddress);
       } else {
         setRecipientAddress('');
@@ -154,8 +165,10 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
           >
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <h2 className="text-2xl font-bold text-white">Fund Pool</h2>
-                <p className="mt-1 text-xs text-slate-400">Transfer tokens to a customer address</p>
+                <h2 className="text-2xl font-bold text-white">Fund Reward Pool</h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  Transfer BWT tokens to the contract address to fund the reward pool
+                </p>
               </div>
               <button
                 type="button"
@@ -179,7 +192,7 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
               {/* Recipient Address */}
               <div>
                 <label htmlFor="recipient-address" className="block text-xs uppercase tracking-[0.3em] text-white/70 mb-2">
-                  Recipient Address
+                  Contract Address (Reward Pool)
                 </label>
                 <input
                   id="recipient-address"
@@ -189,10 +202,15 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
                     setRecipientAddress(e.target.value);
                     setError('');
                   }}
-                  placeholder="0xE4e68F1fEB1Bd1B3035E1cEC0cFE0C657D2f4fF9"
+                  placeholder={LOYALTY_ADDRESS || "0x..."}
                   className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white placeholder:text-white/30 focus:border-emerald-400/50 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
                   disabled={isTransferring}
                 />
+                {LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase() && (
+                  <p className="mt-2 text-xs text-emerald-300">
+                    ✓ This will fund the reward pool. The contract needs BWT to pay rewards to customers.
+                  </p>
+                )}
               </div>
 
               {/* Amount */}
@@ -235,7 +253,9 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
 
               {/* Info */}
               <p className="text-xs text-center text-slate-400">
-                This will transfer tokens from your connected wallet to the recipient address.
+                {LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase()
+                  ? 'This will transfer BWT tokens from your wallet to the contract to fund the reward pool. Customers can then redeem rewards.'
+                  : 'This will transfer tokens from your connected wallet to the recipient address.'}
               </p>
             </div>
           </motion.div>

@@ -34,8 +34,13 @@ export default function WalletConnect() {
       await connectCustomerWallet();
       toast.success('Customer wallet connected');
     } catch (error) {
-      console.error('Customer wallet connection failed:', error);
-      toast.error(error?.message || 'Failed to connect customer wallet');
+      // Don't show error for user rejections (code 4001)
+      const isUserRejection = error?.code === 4001 || error?.message?.includes('User rejected');
+      if (!isUserRejection) {
+        console.error('Customer wallet connection failed:', error);
+        toast.error(error?.message || 'Failed to connect customer wallet');
+      }
+      // Silently handle user rejections - user intentionally cancelled
     } finally {
       setCustomerBusy(false);
     }

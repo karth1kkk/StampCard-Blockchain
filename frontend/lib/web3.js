@@ -61,26 +61,36 @@ export const getContractOwner = async (provider) => {
 };
 
 export const getStampCount = async (address, provider) => {
-  if (!address || !provider) return 0;
+  if (!address || !provider) {
+    console.warn('getStampCount: Missing address or provider', { address, hasProvider: !!provider });
+    return 0n;
+  }
   try {
     const contract = getContractReadOnly(provider);
     const count = await contract.getStampCount(address);
-    return Number(count);
+    // Return as BigInt to preserve precision
+    return typeof count === 'bigint' ? count : BigInt(count || 0);
   } catch (error) {
+    console.error('getStampCount error:', error);
     handleContractError(error, 'getStampCount');
-    return 0;
+    return 0n;
   }
 };
 
 export const getPendingRewards = async (address, provider) => {
-  if (!address || !provider) return 0;
+  if (!address || !provider) {
+    console.warn('getPendingRewards: Missing address or provider', { address, hasProvider: !!provider });
+    return 0n;
+  }
   try {
     const contract = getContractReadOnly(provider);
     const count = await contract.getPendingRewards(address);
-    return Number(count);
+    // Return as BigInt to preserve precision
+    return typeof count === 'bigint' ? count : BigInt(count || 0);
   } catch (error) {
+    console.error('getPendingRewards error:', error);
     handleContractError(error, 'getPendingRewards');
-    return 0;
+    return 0n;
   }
 };
 

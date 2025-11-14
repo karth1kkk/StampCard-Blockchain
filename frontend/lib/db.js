@@ -115,17 +115,29 @@ export const getCustomerSummary = async (address) => {
 export const listCustomers = async () => {
   const client = requireSupabase();
   try {
+  // Use left join instead of inner join to include customers without email records
   const { data, error } = await client
       .from('stamps')
       .select(
-        'customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold, customers!inner(email)'
+        'customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold, customers(email)'
       )
       .order('last_updated', { ascending: false })
       .limit(250);
 
     if (error) {
+      console.error('Error fetching customers from stamps table:', error);
       throw error;
     }
+
+    console.log('listCustomers: Fetched stamps data:', {
+      count: data?.length || 0,
+      sample: data?.slice(0, 3).map((row) => ({
+        wallet: row.customer_wallet,
+        stampCount: row.stamp_count,
+        pendingRewards: row.pending_rewards,
+        email: row.customers?.email,
+      })),
+    });
 
     return (
       data?.map((row) => ({
@@ -259,24 +271,58 @@ export const recordPurchase = async ({
       throw stampFetchError;
     }
 
+    // Always increment lifetime stamps
     const lifetimeStamps =
       Number(existingStamp?.lifetime_stamps || 0) + Number(stampsAwarded || 1);
 
-    let nextStampCount =
-      stampCount !== undefined && stampCount !== null
-        ? Number(stampCount)
-        : Number(existingStamp?.stamp_count || 0) + Number(stampsAwarded || 1);
-
-    let nextPendingRewards =
-      pendingRewards !== undefined && pendingRewards !== null
-        ? Number(pendingRewards)
-        : Number(existingStamp?.pending_rewards || 0);
-
-    if (pendingRewards === undefined && stampCount === undefined) {
+    // Use on-chain values if provided (most reliable), otherwise calculate from existing values
+    let nextStampCount;
+    let nextPendingRewards;
+    
+    if (stampCount !== undefined && stampCount !== null && pendingRewards !== undefined && pendingRewards !== null) {
+      // Use on-chain values directly (most accurate)
+      // Handle both string and number inputs (from API)
+      nextStampCount = typeof stampCount === 'string' ? Number(stampCount) : Number(stampCount);
+      nextPendingRewards = typeof pendingRewards === 'string' ? Number(pendingRewards) : Number(pendingRewards);
+      
+      // Ensure we have valid numbers
+      if (isNaN(nextStampCount)) nextStampCount = 0;
+      if (isNaN(nextPendingRewards)) nextPendingRewards = 0;
+      
+      console.log('Using on-chain values for stamp update:', {
+        wallet,
+        onChainStampCount: nextStampCount,
+        onChainPendingRewards: nextPendingRewards,
+        previousStampCount: existingStamp?.stamp_count || 0,
+        previousPendingRewards: existingStamp?.pending_rewards || 0,
+        stampsAwarded,
+        rawStampCount: stampCount,
+        rawPendingRewards: pendingRewards,
+      });
+    } else {
+      // Fallback: calculate from existing database values
+      const previousStampCount = Number(existingStamp?.stamp_count || 0);
+      const previousPendingRewards = Number(existingStamp?.pending_rewards || 0);
+      const stampsToAdd = Number(stampsAwarded || 1);
+      
+      nextStampCount = previousStampCount + stampsToAdd;
+      nextPendingRewards = previousPendingRewards;
+      
+      // Handle reward threshold overflow
       while (nextStampCount >= threshold) {
         nextStampCount -= threshold;
         nextPendingRewards += 1;
       }
+      
+      console.log('Calculated stamp values from database:', {
+        wallet,
+        previousStampCount,
+        stampsToAdd,
+        nextStampCount,
+        previousPendingRewards,
+        nextPendingRewards,
+        threshold,
+      });
     }
 
     const rewardEligible = nextPendingRewards > 0 || nextStampCount >= threshold;
@@ -318,13 +364,38 @@ export const recordPurchase = async ({
       last_order_id: orderRecord?.id || existingStamp?.last_order_id || null,
     };
 
-    const { error: stampError } = await client
+    console.log('recordPurchase: Upserting stamp record:', {
+      wallet,
+      stampPayload: {
+        ...stampPayload,
+        stamp_count: nextStampCount,
+        pending_rewards: nextPendingRewards,
+      },
+      previousStamp: existingStamp ? {
+        stamp_count: existingStamp.stamp_count,
+        pending_rewards: existingStamp.pending_rewards,
+      } : 'none',
+    });
+
+    const { data: upsertedStamp, error: stampError } = await client
       .from('stamps')
-      .upsert(stampPayload, { onConflict: 'customer_wallet' });
+      .upsert(stampPayload, { onConflict: 'customer_wallet' })
+      .select()
+      .single();
 
     if (stampError) {
+      console.error('recordPurchase: Stamp upsert error:', stampError);
       throw stampError;
     }
+
+    console.log('recordPurchase: Stamp record updated successfully:', {
+      wallet,
+      dbStampCount: upsertedStamp?.stamp_count,
+      dbPendingRewards: upsertedStamp?.pending_rewards,
+      expectedStampCount: nextStampCount,
+      expectedPendingRewards: nextPendingRewards,
+      match: upsertedStamp?.stamp_count === nextStampCount && upsertedStamp?.pending_rewards === nextPendingRewards,
+    });
 
     return {
       wallet_address: wallet,
@@ -443,7 +514,7 @@ const recordPurchaseLegacy = async ({
   };
 };
 
-export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumber, rewardAmountBWT }) => {
+export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumber, rewardAmountBWT, stampCount, pendingRewards }) => {
   const client = requireSupabase();
   const wallet = normaliseAddress(walletAddress);
   if (!wallet) {
@@ -453,7 +524,7 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
   try {
   const { data: existing, error } = await client
       .from('stamps')
-      .select('pending_rewards')
+      .select('pending_rewards, stamp_count')
       .eq('customer_wallet', wallet)
       .maybeSingle();
 
@@ -461,20 +532,30 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
       throw error;
     }
 
-    const pending = Number(existing?.pending_rewards || 0);
-    if (pending <= 0) {
-      throw new Error('No pending rewards to redeem');
-    }
-
     const now = new Date().toISOString();
-    const newPending = pending - 1;
+    
+    // Use on-chain values if provided, otherwise calculate from existing values
+    let newPending, newStampCount;
+    if (pendingRewards !== undefined && stampCount !== undefined) {
+      // Use on-chain values to ensure database matches blockchain
+      newPending = Number(pendingRewards);
+      newStampCount = Number(stampCount);
+    } else {
+      // Fallback: calculate from existing database values
+      const pending = Number(existing?.pending_rewards || 0);
+      if (pending <= 0) {
+        throw new Error('No pending rewards to redeem');
+      }
+      newPending = pending - 1;
+      newStampCount = 0; // Contract resets stamp count to 0 on redemption
+    }
 
     const { error: updateError } = await client
       .from('stamps')
       .update({
         pending_rewards: newPending,
         reward_eligible: newPending > 0,
-        stamp_count: 0,
+        stamp_count: newStampCount,
         last_updated: now,
       })
       .eq('customer_wallet', wallet);
@@ -498,6 +579,7 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
     return {
       wallet_address: wallet,
       pending_rewards: newPending,
+      stamp_count: newStampCount,
       reward_eligible: newPending > 0,
       redeemed_at: now,
     };

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BREW_TOKEN_SYMBOL } from '../../lib/constants';
 import { COFFEE_MENU } from '../../constants/products';
@@ -47,6 +47,136 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
     };
   }, [receiptData]);
 
+  const handleDownloadReceipt = useCallback(() => {
+    if (!receiptPayload) return;
+
+    const subtotal = receiptPayload.subtotal;
+    const tax = receiptPayload.tax;
+    const total = receiptPayload.total;
+
+    // Generate receipt content
+    const receiptContent = [
+      '═══════════════════════════════════════════════════════',
+      '              BREWTOKEN COFFEE LOYALTY',
+      '                    RECEIPT',
+      '═══════════════════════════════════════════════════════',
+      '',
+      `Date & Time: ${formatDate(receiptPayload.transaction.timestamp)}`,
+      `Transaction Hash: ${receiptPayload.transaction.txHash}`,
+      receiptPayload.transaction.blockNumber !== '—' 
+        ? `Block Number: #${receiptPayload.transaction.blockNumber}`
+        : '',
+      `Payment Method: ${receiptPayload.transaction.paymentMethod.replace(/-/g, ' ').toUpperCase()}`,
+      '',
+      '───────────────────────────────────────────────────────',
+      'CUSTOMER INFORMATION',
+      '───────────────────────────────────────────────────────',
+      `Wallet: ${receiptPayload.customer.wallet}`,
+      receiptPayload.customer.email ? `Email: ${receiptPayload.customer.email}` : '',
+      receiptPayload.merchant.email ? `Merchant: ${receiptPayload.merchant.email}` : '',
+      '',
+      '───────────────────────────────────────────────────────',
+      'ITEMS PURCHASED',
+      '───────────────────────────────────────────────────────',
+      ...receiptPayload.items.map((item, idx) => {
+        const productId = item.id || item.product_id;
+        const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+        const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';
+        const itemDescription = item.description || fullProduct?.description || null;
+        const itemPrice = item.price || item.price_bwt || fullProduct?.price || 0;
+        const itemQuantity = item.quantity || 1;
+        const itemTotal = Number(itemPrice) * Number(itemQuantity);
+        
+        return [
+          `${itemName}`,
+          itemDescription ? `  ${itemDescription}` : '',
+          `  Qty: ${itemQuantity} × ${formatAmount(itemPrice)} ${BREW_TOKEN_SYMBOL}`,
+          `  Total: ${formatAmount(itemTotal)} ${BREW_TOKEN_SYMBOL}`,
+          '',
+        ].filter(Boolean);
+      }).flat(),
+      '───────────────────────────────────────────────────────',
+      'TOTALS',
+      '───────────────────────────────────────────────────────',
+      `Subtotal: ${formatAmount(subtotal)} ${BREW_TOKEN_SYMBOL}`,
+      tax > 0 ? `Tax: ${formatAmount(tax)} ${BREW_TOKEN_SYMBOL}` : '',
+      `TOTAL: ${formatAmount(total)} ${BREW_TOKEN_SYMBOL}`,
+      '',
+      '───────────────────────────────────────────────────────',
+      'LOYALTY REWARDS',
+      '───────────────────────────────────────────────────────',
+      `Stamps Awarded: ${receiptPayload.stampsAwarded}`,
+      `Total Stamps: ${receiptPayload.stampCount}`,
+      receiptPayload.pendingRewards > 0 
+        ? `Pending Rewards: ${receiptPayload.pendingRewards} free drink${receiptPayload.pendingRewards !== 1 ? 's' : ''}`
+        : '',
+      '',
+      '───────────────────────────────────────────────────────',
+      'TRANSACTION DETAILS',
+      '───────────────────────────────────────────────────────',
+      JSON.stringify(
+        {
+          transactionHash: receiptPayload.transaction.txHash,
+          blockNumber: receiptPayload.transaction.blockNumber,
+          timestamp: receiptPayload.transaction.timestamp,
+          paymentMethod: receiptPayload.transaction.paymentMethod,
+          customer: {
+            wallet: receiptPayload.customer.wallet,
+            email: receiptPayload.customer.email || null,
+          },
+          merchant: {
+            email: receiptPayload.merchant.email || null,
+          },
+          items: receiptPayload.items.map((item) => {
+            const productId = item.id || item.product_id;
+            const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+            return {
+              id: productId || null,
+              name: item.name || item.product_name || fullProduct?.name || 'Coffee',
+              description: item.description || fullProduct?.description || null,
+              quantity: item.quantity || 1,
+              price: item.price || item.price_bwt || fullProduct?.price || 0,
+              total: (item.price || item.price_bwt || fullProduct?.price || 0) * (item.quantity || 1),
+            };
+          }),
+          totals: {
+            subtotal: receiptPayload.subtotal,
+            tax: receiptPayload.tax,
+            total: receiptPayload.total,
+          },
+          loyalty: {
+            stampsAwarded: receiptPayload.stampsAwarded,
+            stampCount: receiptPayload.stampCount,
+            pendingRewards: receiptPayload.pendingRewards,
+          },
+        },
+        null,
+        2
+      ),
+      '',
+      '═══════════════════════════════════════════════════════',
+      'Thank you for your purchase!',
+      'This receipt is stored on-chain and in our database.',
+      '═══════════════════════════════════════════════════════',
+    ].filter(Boolean).join('\n');
+
+    // Create a blob and download
+    const blob = new Blob([receiptContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    // Generate filename with timestamp and tx hash
+    const timestamp = new Date(receiptPayload.transaction.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const txHashShort = receiptPayload.transaction.txHash.slice(0, 10);
+    link.download = `receipt-${timestamp}-${txHashShort}.txt`;
+    
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [receiptPayload]);
+
   if (!isOpen || !receiptPayload) {
     return null;
   }
@@ -79,13 +209,36 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                   <h2 className="text-2xl font-bold text-white">Receipt</h2>
                   <p className="text-xs text-slate-400 mt-1">BrewToken Coffee Loyalty</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/40 hover:text-white"
-                >
-                  Close
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadReceipt}
+                    className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-300 hover:bg-emerald-400/20 flex items-center gap-2"
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                      />
+                    </svg>
+                    Download
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/40 hover:text-white"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
 

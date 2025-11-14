@@ -292,8 +292,12 @@ export const WalletProvider = ({ children }) => {
         role,
       });
       } catch (error) {
-        console.error(`Failed to connect ${role} wallet:`, error);
-        setLastError(error);
+        // Don't log or throw errors for user rejections (code 4001)
+        const isUserRejection = error?.code === 4001 || error?.message?.includes('User rejected');
+        if (!isUserRejection) {
+          console.error(`Failed to connect ${role} wallet:`, error);
+          setLastError(error);
+        }
         throw error;
       } finally {
         setIsConnecting(false);

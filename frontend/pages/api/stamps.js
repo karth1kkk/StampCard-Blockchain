@@ -47,7 +47,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'PATCH') {
-    const { address, txHash, blockNumber, rewardAmountBWT } = req.body || {};
+    const { address, txHash, blockNumber, rewardAmountBWT, stampCount, pendingRewards } = req.body || {};
     if (!address) {
       return res.status(400).json({ error: 'address is required' });
     }
@@ -61,6 +61,8 @@ export default async function handler(req, res) {
         txHash,
         blockNumber,
         rewardAmountBWT,
+        stampCount: stampCount !== undefined ? Number(stampCount) : undefined,
+        pendingRewards: pendingRewards !== undefined ? Number(pendingRewards) : undefined,
       });
       return res.status(200).json(result);
     } catch (error) {

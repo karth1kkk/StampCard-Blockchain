@@ -87,14 +87,20 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
   const [receiptData, setReceiptData] = useState(null);
   const [isReceiptVisible, setIsReceiptVisible] = useState(false);
   const [isFundPoolModalOpen, setIsFundPoolModalOpen] = useState(false);
+  const [merchantDisplayName, setMerchantDisplayName] = useState('');
 
   const handleConnectMerchant = useCallback(async () => {
     try {
       await connectCustomerWallet();
       toast.success('Merchant wallet connected.');
     } catch (error) {
-      console.error('Merchant wallet connection failed:', error);
-      toast.error(error?.message || 'Unable to connect wallet.');
+      // Don't show error for user rejections (code 4001)
+      const isUserRejection = error?.code === 4001 || error?.message?.includes('User rejected');
+      if (!isUserRejection) {
+        console.error('Merchant wallet connection failed:', error);
+        toast.error(error?.message || 'Unable to connect wallet.');
+      }
+      // Silently handle user rejections - user intentionally cancelled
     }
   }, [connectCustomerWallet]);
 
@@ -118,6 +124,24 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
     const timer = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(timer);
   }, []);
+
+  // Fetch merchant display name from Supabase Auth user metadata
+  useEffect(() => {
+    if (!session?.user) {
+      setMerchantDisplayName('');
+      return;
+    }
+
+    // Try to get display name from session user metadata
+    const displayName = 
+      session?.user?.user_metadata?.display_name ||
+      session?.user?.user_metadata?.displayName ||
+      session?.user?.raw_user_meta_data?.display_name ||
+      session?.user?.raw_user_meta_data?.displayName ||
+      '';
+
+    setMerchantDisplayName(displayName);
+  }, [session?.user]);
 
 const merchantContractAddress = useMemo(() => {
   const raw = MERCHANT_WALLET_ADDRESS || LOYALTY_CONTRACT_ADDRESS;
@@ -338,16 +362,99 @@ const merchantContractAddress = useMemo(() => {
       setCustomerWalletSynced(true);
 
       // Note: buyCoffee automatically increments stamps on-chain (no need to call recordStampOnChain)
-      // Fetch the on-chain stamp count and pending rewards to sync with database
+      // The receipt.wait() already ensures the transaction is confirmed
+      // Add a brief delay to ensure contract state is propagated
       try {
         setProcessingStamp(true);
-        const [stampCount, pendingRewards] = await Promise.all([
-          getStampCount(customerWalletToUse, customerSigner.provider),
-          getPendingRewards(customerWalletToUse, customerSigner.provider),
-        ]);
+        
+        // Brief delay to ensure contract state is updated (some RPC nodes need a moment)
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        
+        // Fetch the on-chain stamp count and pending rewards to sync with database
+        const provider = customerSigner.provider;
+        console.log('Fetching on-chain stamp data:', {
+          customerWallet: customerWalletToUse,
+          txHash: hash,
+          blockNumber: receipt?.blockNumber,
+          receiptStatus: receipt?.status,
+        });
+        
+        // Verify transaction succeeded
+        // In ethers.js v6, receipt.status is 1 for success, 0 for failure
+        const receiptStatus = receipt?.status;
+        if (receiptStatus === 0 || receiptStatus === 0n) {
+          console.error('Transaction failed or reverted:', {
+            txHash: hash,
+            status: receiptStatus,
+            statusType: typeof receiptStatus,
+          });
+          throw new Error('Transaction failed. Stamp was not recorded.');
+        }
+        if (receiptStatus !== 1 && receiptStatus !== 1n) {
+          console.warn('Transaction status is unknown:', {
+            txHash: hash,
+            status: receiptStatus,
+            statusType: typeof receiptStatus,
+          });
+        }
+        
+        // Retry logic: try up to 3 times with increasing delays
+        let stampCount = 0n;
+        let pendingRewards = 0n;
+        let retries = 0;
+        const maxRetries = 3;
+        
+        while (retries < maxRetries) {
+          try {
+            const [fetchedStampCount, fetchedPendingRewards] = await Promise.all([
+              getStampCount(customerWalletToUse, provider),
+              getPendingRewards(customerWalletToUse, provider),
+            ]);
+            
+            stampCount = fetchedStampCount;
+            pendingRewards = fetchedPendingRewards;
+            
+            console.log(`Attempt ${retries + 1}: Fetched on-chain values:`, {
+              customerWallet: customerWalletToUse,
+              stampCount: stampCount.toString(),
+              pendingRewards: pendingRewards.toString(),
+              txHash: hash,
+            });
+            
+            // Always retry maxRetries times to ensure we get the latest state
+            if (retries < maxRetries - 1) {
+              await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            }
+            retries++;
+          } catch (fetchError) {
+            console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
+            if (retries === maxRetries - 1) {
+              throw fetchError;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            retries++;
+          }
+        }
+        
+        // Warn if stamp count is still 0 after successful transaction
+        if (stampCount === 0n) {
+          console.warn('WARNING: Stamp count is 0 after successful transaction. This may indicate a contract issue.', {
+            customerWallet: customerWalletToUse,
+            txHash: hash,
+            blockNumber: receipt?.blockNumber,
+          });
+        }
+
+        console.log('Final on-chain values before database sync:', {
+          customerWallet: customerWalletToUse,
+          onChainStampCount: stampCount.toString(),
+          onChainPendingRewards: pendingRewards.toString(),
+          txHash: hash,
+          blockNumber: receipt?.blockNumber,
+        });
 
         // Sync to Supabase with on-chain values
-        await fetch('/api/stamps', {
+        const syncResponse = await fetch('/api/stamps', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -362,13 +469,53 @@ const merchantContractAddress = useMemo(() => {
             blockNumber: receipt?.blockNumber || null,
             rewardThreshold: STAMPS_PER_REWARD,
             stampsAwarded: 1, // buyCoffee automatically adds 1 stamp
-            pendingRewards, // Use on-chain value
-            stampCount, // Use on-chain value
+            pendingRewards: pendingRewards.toString(), // Use on-chain value as string
+            stampCount: stampCount.toString(), // Use on-chain value as string
             merchantEmail: session?.user?.email || null,
             status: 'PAID',
-            metadata: { source: 'pos-dashboard', paymentMethod: 'connected-wallet' },
+            metadata: { 
+              source: 'pos-dashboard', 
+              paymentMethod: 'connected-wallet',
+              onChainStampCount: stampCount.toString(),
+              onChainPendingRewards: pendingRewards.toString(),
+            },
           }),
         });
+
+        if (!syncResponse.ok) {
+          const errorData = await syncResponse.json().catch(() => ({}));
+          console.error('Database sync failed:', errorData);
+          throw new Error(errorData?.error || 'Failed to sync purchase to database');
+        }
+
+        const syncResult = await syncResponse.json();
+        console.log('Database sync successful:', {
+          wallet: customerWalletToUse,
+          dbStampCount: syncResult.stamp_count,
+          dbPendingRewards: syncResult.pending_rewards,
+          onChainStampCount: stampCount.toString(),
+          onChainPendingRewards: pendingRewards.toString(),
+          timestamp: new Date().toISOString(),
+        });
+        
+        // Verify the database was updated correctly
+        const dbStampCountNum = Number(syncResult.stamp_count);
+        const onChainStampCountNum = Number(stampCount);
+        if (dbStampCountNum !== onChainStampCountNum) {
+          console.error('❌ CRITICAL: Stamp count mismatch after sync!', {
+            wallet: customerWalletToUse,
+            onChain: onChainStampCountNum,
+            database: dbStampCountNum,
+            difference: onChainStampCountNum - dbStampCountNum,
+          });
+          toast.error(`Warning: Database stamp count (${dbStampCountNum}) does not match on-chain (${onChainStampCountNum}). Please refresh the customer list.`);
+        } else {
+          console.log('✅ Database stamp count verified:', {
+            wallet: customerWalletToUse,
+            stampCount: dbStampCountNum,
+            pendingRewards: Number(syncResult.pending_rewards),
+          });
+        }
 
         // Show receipt
         setReceiptData({
@@ -382,23 +529,44 @@ const merchantContractAddress = useMemo(() => {
           timestamp: new Date().toISOString(),
           paymentMethod: 'connected-wallet',
           stampsAwarded: 1,
-          stampCount,
-          pendingRewards,
+          stampCount: Number(stampCount),
+          pendingRewards: Number(pendingRewards),
         });
         setIsReceiptVisible(true);
 
         toast.success('Payment and stamp recorded successfully.');
+        
+        // Force refresh customer list - use multiple mechanisms to ensure UI updates
+        // 1. Immediate refresh token increment
         setOrderHistoryRefreshToken((token) => token + 1);
+        
+        // 2. Additional delayed refresh to catch any race conditions
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => token + 1);
+          console.log('Customer list refresh triggered after transaction');
+        }, 1000);
+        
+        // 3. Another refresh after a longer delay to ensure database propagation
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => token + 1);
+          console.log('Customer list refresh triggered (final) after transaction');
+        }, 2500);
+        
         resetOrder();
       } catch (syncError) {
         console.error('Syncing purchase to database failed:', syncError);
         toast.error('Payment successful, but database sync failed. The stamp was recorded on-chain.');
-        // Show receipt even if database sync failed
+        // Show receipt even if database sync failed - fetch on-chain values
         try {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           const [stampCount, pendingRewards] = await Promise.all([
             getStampCount(customerWalletToUse, customerSigner.provider),
             getPendingRewards(customerWalletToUse, customerSigner.provider),
           ]);
+          console.log('Fetched on-chain values for receipt (after sync failure):', {
+            stampCount: stampCount.toString(),
+            pendingRewards: pendingRewards.toString(),
+          });
           setReceiptData({
             items: orderItems,
             totalBWT: orderSummary.totalBwt,
@@ -410,8 +578,8 @@ const merchantContractAddress = useMemo(() => {
             timestamp: new Date().toISOString(),
             paymentMethod: 'connected-wallet',
             stampsAwarded: 1,
-            stampCount,
-            pendingRewards,
+            stampCount: Number(stampCount),
+            pendingRewards: Number(pendingRewards),
           });
         } catch (fetchError) {
           console.error('Failed to fetch on-chain stamp data:', fetchError);
@@ -568,11 +736,97 @@ const merchantContractAddress = useMemo(() => {
           await ensureCorrectNetwork();
         }
         setProcessingStamp(true);
-        await recordStampOnChain(pendingOrder.customerWallet, customerSigner);
-        const [stampCount, pendingRewards] = await Promise.all([
-          getStampCount(pendingOrder.customerWallet, customerSigner.provider),
-          getPendingRewards(pendingOrder.customerWallet, customerSigner.provider),
-        ]);
+        
+        // Record stamp on-chain
+        const { hash: stampTxHash, receipt: stampReceipt } = await recordStampOnChain(pendingOrder.customerWallet, customerSigner);
+        
+        // Brief delay to ensure contract state is propagated
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        
+        // Fetch the on-chain stamp count and pending rewards to sync with database
+        const provider = customerSigner.provider;
+        console.log('Fetching on-chain stamp data (QR payment):', {
+          customerWallet: pendingOrder.customerWallet,
+          paymentTxHash: transactionHash,
+          stampTxHash: stampTxHash,
+          blockNumber: stampReceipt?.blockNumber,
+          receiptStatus: stampReceipt?.status,
+        });
+        
+        // Verify transaction succeeded
+        // In ethers.js v6, receipt.status is 1 for success, 0 for failure
+        const stampReceiptStatus = stampReceipt?.status;
+        if (stampReceiptStatus === 0 || stampReceiptStatus === 0n) {
+          console.error('Stamp transaction failed or reverted:', {
+            stampTxHash: stampTxHash,
+            status: stampReceiptStatus,
+            statusType: typeof stampReceiptStatus,
+          });
+          throw new Error('Stamp transaction failed. Stamp was not recorded.');
+        }
+        if (stampReceiptStatus !== 1 && stampReceiptStatus !== 1n) {
+          console.warn('Stamp transaction status is unknown:', {
+            stampTxHash: stampTxHash,
+            status: stampReceiptStatus,
+            statusType: typeof stampReceiptStatus,
+          });
+        }
+        
+        // Retry logic: try up to 3 times with increasing delays
+        let stampCount = 0n;
+        let pendingRewards = 0n;
+        let retries = 0;
+        const maxRetries = 3;
+        
+        while (retries < maxRetries) {
+          try {
+            const [fetchedStampCount, fetchedPendingRewards] = await Promise.all([
+              getStampCount(pendingOrder.customerWallet, provider),
+              getPendingRewards(pendingOrder.customerWallet, provider),
+            ]);
+            
+            stampCount = fetchedStampCount;
+            pendingRewards = fetchedPendingRewards;
+            
+            console.log(`Attempt ${retries + 1} (QR): Fetched on-chain values:`, {
+              customerWallet: pendingOrder.customerWallet,
+              stampCount: stampCount.toString(),
+              pendingRewards: pendingRewards.toString(),
+              stampTxHash: stampTxHash,
+            });
+            
+            // Always retry maxRetries times to ensure we get the latest state
+            if (retries < maxRetries - 1) {
+              await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            }
+            retries++;
+          } catch (fetchError) {
+            console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
+            if (retries === maxRetries - 1) {
+              throw fetchError;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            retries++;
+          }
+        }
+        
+        // Warn if stamp count is still 0 after successful transaction
+        if (stampCount === 0n) {
+          console.warn('WARNING: Stamp count is 0 after successful transaction. This may indicate a contract issue.', {
+            customerWallet: pendingOrder.customerWallet,
+            stampTxHash: stampTxHash,
+            blockNumber: stampReceipt?.blockNumber,
+          });
+        }
+
+        console.log('Final on-chain values before database sync (QR payment):', {
+          customerWallet: pendingOrder.customerWallet,
+          onChainStampCount: stampCount.toString(),
+          onChainPendingRewards: pendingRewards.toString(),
+          paymentTxHash: transactionHash,
+          stampTxHash: stampTxHash,
+          blockNumber: stampReceipt?.blockNumber,
+        });
 
         const response = await fetch('/api/stamps', {
           method: 'POST',
@@ -585,19 +839,58 @@ const merchantContractAddress = useMemo(() => {
             email: pendingOrder.customerEmail,
             totalBWT: pendingOrder.totalBwt,
             items: pendingOrder.items,
-            txHash: transactionHash,
-            blockNumber,
+            txHash: transactionHash, // Use payment tx hash
+            blockNumber: blockNumber || stampReceipt?.blockNumber || null,
             rewardThreshold: STAMPS_PER_REWARD,
             stampsAwarded: 1,
-            pendingRewards,
-            stampCount,
+            pendingRewards: pendingRewards.toString(), // Use on-chain value as string
+            stampCount: stampCount.toString(), // Use on-chain value as string
             merchantEmail: session?.user?.email || null,
             status: 'PAID',
-            metadata: { source: 'pos-dashboard' },
+            metadata: { 
+              source: 'pos-dashboard', 
+              paymentMethod: 'qr-code', 
+              stampTxHash: stampTxHash,
+              onChainStampCount: stampCount.toString(),
+              onChainPendingRewards: pendingRewards.toString(),
+            },
           }),
         });
 
-        const payload = response.ok ? await response.json() : null;
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error('Database sync failed (QR payment):', errorData);
+          throw new Error(errorData?.error || 'Failed to sync purchase to database');
+        }
+
+        const payload = await response.json();
+        console.log('Database sync successful (QR payment):', {
+          wallet: pendingOrder.customerWallet,
+          dbStampCount: payload.stamp_count,
+          dbPendingRewards: payload.pending_rewards,
+          onChainStampCount: stampCount.toString(),
+          onChainPendingRewards: pendingRewards.toString(),
+          timestamp: new Date().toISOString(),
+        });
+        
+        // Verify the database was updated correctly
+        const dbStampCountNum = Number(payload.stamp_count);
+        const onChainStampCountNum = Number(stampCount);
+        if (dbStampCountNum !== onChainStampCountNum) {
+          console.error('❌ CRITICAL: Stamp count mismatch after sync (QR payment)!', {
+            wallet: pendingOrder.customerWallet,
+            onChain: onChainStampCountNum,
+            database: dbStampCountNum,
+            difference: onChainStampCountNum - dbStampCountNum,
+          });
+          toast.error(`Warning: Database stamp count (${dbStampCountNum}) does not match on-chain (${onChainStampCountNum}). Please refresh the customer list.`);
+        } else {
+          console.log('✅ Database stamp count verified (QR payment):', {
+            wallet: pendingOrder.customerWallet,
+            stampCount: dbStampCountNum,
+            pendingRewards: Number(payload.pending_rewards),
+          });
+        }
 
         toast.success('Stamp recorded successfully.');
         
@@ -613,12 +906,27 @@ const merchantContractAddress = useMemo(() => {
           timestamp: new Date().toISOString(),
           paymentMethod: 'qr-code',
           stampsAwarded: 1,
-          stampCount,
-          pendingRewards,
+          stampCount: Number(stampCount),
+          pendingRewards: Number(pendingRewards),
         });
         setIsReceiptVisible(true);
         
+        // Force refresh customer list - use multiple mechanisms to ensure UI updates
+        // 1. Immediate refresh token increment
         setOrderHistoryRefreshToken((token) => token + 1);
+        
+        // 2. Additional delayed refresh to catch any race conditions
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => token + 1);
+          console.log('Customer list refresh triggered after QR payment');
+        }, 1000);
+        
+        // 3. Another refresh after a longer delay to ensure database propagation
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => token + 1);
+          console.log('Customer list refresh triggered (final) after QR payment');
+        }, 2500);
+        
         resetOrder();
 
         if (!payload?.rewardEligible && pendingRewards > 0) {
@@ -744,7 +1052,9 @@ const merchantContractAddress = useMemo(() => {
         <div className="mt-8 space-y-4 rounded-3xl border border-white/10 bg-black/30 p-5">
           <div>
             <p className="text-[10px] uppercase tracking-[0.35em] text-white/40">Merchant session</p>
-            <p className="mt-2 font-mono text-sm text-emerald-200">{session?.user?.email || '—'}</p>
+            <p className="mt-2 font-mono text-sm text-emerald-200">
+              {merchantDisplayName || session?.user?.email || '—'}
+            </p>
             <p className="mt-1 text-[10px] uppercase tracking-[0.4em] text-emerald-200/70">
               Auto logout after 2 min idle
             </p>
@@ -810,7 +1120,7 @@ const merchantContractAddress = useMemo(() => {
               </button>
             ) : null}
           </div>
-          <button
+          {/* <button
             type="button"
             onClick={() => {
               setActiveTab('customers');
@@ -819,7 +1129,7 @@ const merchantContractAddress = useMemo(() => {
             className="w-full rounded-3xl border border-white/10 bg-white/[0.08] px-4 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/90 transition hover:border-emerald-200 hover:bg-emerald-400/10"
           >
             Customer Directory
-          </button>
+          </button> */}
           <button
             type="button"
             onClick={() => {
@@ -874,7 +1184,7 @@ const merchantContractAddress = useMemo(() => {
             >
               {isFunding ? 'Funding…' : 'Fund Pool'}
             </button>
-            <button
+            {/* <button
               type="button"
               onClick={() => {
                 resetOrder();
@@ -883,7 +1193,7 @@ const merchantContractAddress = useMemo(() => {
               className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
             >
               Refresh Wallet
-            </button>
+            </button> */}
             <button
               type="button"
               onClick={() => {
@@ -1015,7 +1325,7 @@ const merchantContractAddress = useMemo(() => {
                   </button>
                 </div>
               </label>
-              <label className="block text-[10px] font-semibold uppercase tracking-[0.35em] text-white/50">
+              {/* <label className="block text-[10px] font-semibold uppercase tracking-[0.35em] text-white/50">
                 Customer Email (optional)
                 <input
                   value={customerEmail}
@@ -1023,7 +1333,7 @@ const merchantContractAddress = useMemo(() => {
                   placeholder="customer@example.com"
                   className="mt-2 w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-300/70 focus:ring-1 focus:ring-emerald-300/50"
                 />
-              </label>
+              </label> */}
             </div>
 
             <div className="mt-6 space-y-3 border-t border-white/10 pt-4">
@@ -1050,29 +1360,26 @@ const merchantContractAddress = useMemo(() => {
                   Connect wallet to pay directly
                 </p>
               )}
-              <button
-                type="button"
-                onClick={handleGenerateQr}
-                disabled={!canCreateQr || processingStamp || isConnecting || isWatchingPayment}
-                className="w-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white shadow-lg shadow-indigo-500/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isWatchingPayment
-                  ? 'Awaiting Payment…'
-                  : processingStamp
-                  ? 'Recording Stamp…'
-                  : 'Generate Payment QR'}
-              </button>
-              <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab('history');
-                  setIsCustomerPanelOpen(true);
-                }}
-                className="rounded-full border border-blue-400/30 bg-blue-400/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-blue-200 transition hover:border-blue-300 hover:bg-blue-400/20"
-              >
-                Order History
-              </button>
+              {canCreateQr && (
+                <button
+                  type="button"
+                  onClick={handleGenerateQr}
+                  disabled={processingStamp || isConnecting || isWatchingPayment}
+                  className="w-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white shadow-lg shadow-indigo-500/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isWatchingPayment
+                    ? 'Awaiting Payment…'
+                    : processingStamp
+                    ? 'Recording Stamp…'
+                    : 'Generate Payment QR'}
+                </button>
+              )}
+              {!canCreateQr && orderSummary.totalWei > 0n && (
+                <p className="text-center text-xs text-slate-400 py-2">
+                  Enter customer wallet address to generate QR
+                </p>
+              )}
+              <div className="grid grid-cols-1">
                 <button
                   type="button"
                   onClick={resetOrder}
@@ -1101,16 +1408,16 @@ const merchantContractAddress = useMemo(() => {
       <AnimatePresence>
         {isCustomerPanelOpen ? (
           <motion.div
-            className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 px-4 py-6 backdrop-blur"
+            className="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/80 px-4 pt-6 pb-6 backdrop-blur"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="relative w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/40"
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-5xl max-h-[85vh] overflow-y-auto rounded-t-3xl border border-white/10 bg-slate-950/95 p-6 shadow-2xl shadow-black/40"
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
             >
               <div className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
                 <div className="flex gap-2">
@@ -1159,6 +1466,7 @@ const merchantContractAddress = useMemo(() => {
                 <CustomerList
                   key={orderHistoryRefreshToken}
                   accessToken={session?.access_token}
+                  refreshToken={orderHistoryRefreshToken}
                   onRefreshRequested={() => setOrderHistoryRefreshToken((token) => token + 1)}
                 />
               )}
