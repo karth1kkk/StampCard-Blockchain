@@ -98,7 +98,6 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
       // Don't show error for user rejections (code 4001)
       const isUserRejection = error?.code === 4001 || error?.message?.includes('User rejected');
       if (!isUserRejection) {
-        console.error('Merchant wallet connection failed:', error);
         toast.error(error?.message || 'Unable to connect wallet.');
       }
       // Silently handle user rejections - user intentionally cancelled
@@ -156,7 +155,6 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
         const data = await response.json();
         setCoffeeMenu(data.products || []);
       } catch (error) {
-        console.error('Error fetching products:', error);
         toast.error('Failed to load coffee menu');
       } finally {
         setIsLoadingProducts(false);
@@ -366,14 +364,6 @@ const merchantContractAddress = useMemo(() => {
       }
 
       // Execute the purchase transaction
-      console.log('Executing buyCoffee transaction:', {
-        customerAddress: customerWalletToUse,
-        priceWei: priceWei.toString(),
-        priceBWT: ethers.formatUnits(priceWei, 18),
-        balance: ethers.formatUnits(finalBalance, 18),
-        allowance: ethers.formatUnits(finalAllowance, 18),
-      });
-      
       const { hash, receipt } = await buyCoffee(
         { customerAddress: customerWalletToUse, priceWei },
         customerSigner
@@ -395,30 +385,12 @@ const merchantContractAddress = useMemo(() => {
         
         // Fetch the on-chain stamp count and pending rewards to sync with database
         const provider = customerSigner.provider;
-        console.log('Fetching on-chain stamp data:', {
-          customerWallet: customerWalletToUse,
-          txHash: hash,
-          blockNumber: receipt?.blockNumber,
-          receiptStatus: receipt?.status,
-        });
         
         // Verify transaction succeeded
         // In ethers.js v6, receipt.status is 1 for success, 0 for failure
         const receiptStatus = receipt?.status;
         if (receiptStatus === 0 || receiptStatus === 0n) {
-          console.error('Transaction failed or reverted:', {
-            txHash: hash,
-            status: receiptStatus,
-            statusType: typeof receiptStatus,
-          });
           throw new Error('Transaction failed. Stamp was not recorded.');
-        }
-        if (receiptStatus !== 1 && receiptStatus !== 1n) {
-          console.warn('Transaction status is unknown:', {
-            txHash: hash,
-            status: receiptStatus,
-            statusType: typeof receiptStatus,
-          });
         }
         
         // Retry logic: try up to 5 times with increasing delays to ensure we get updated state
@@ -435,15 +407,6 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(customerWalletToUse, provider),
             ]);
             
-            console.log(`Attempt ${retries + 1}: Fetched on-chain values:`, {
-              customerWallet: customerWalletToUse,
-              stampCount: fetchedStampCount.toString(),
-              pendingRewards: fetchedPendingRewards.toString(),
-              previousStampCount: previousStampCount.toString(),
-              txHash: hash,
-              blockNumber: receipt?.blockNumber,
-            });
-            
             // Only update if we got a value that's different from previous (or if it's our first try)
             // This ensures we're getting the latest state
             if (fetchedStampCount > previousStampCount || retries === 0) {
@@ -453,7 +416,6 @@ const merchantContractAddress = useMemo(() => {
               
               // If stamp count increased, we know the state is updated
               if (fetchedStampCount > 0n && retries > 0) {
-                console.log('✅ Stamp count updated - state is fresh');
                 break;
               }
             }
@@ -469,7 +431,6 @@ const merchantContractAddress = useMemo(() => {
             await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           } catch (fetchError) {
-            console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
             if (retries === maxRetries - 1) {
               // On final retry failure, throw error
               throw fetchError;
@@ -484,12 +445,6 @@ const merchantContractAddress = useMemo(() => {
         // this indicates the stamp wasn't added on-chain, which shouldn't happen
         // In this case, we need to ensure the database still gets updated with at least +1 stamp
         if (stampCount === 0n) {
-          console.error('❌ ERROR: Stamp count is 0 after successful buyCoffee transaction!', {
-            customerWallet: customerWalletToUse,
-            txHash: hash,
-            blockNumber: receipt?.blockNumber,
-            receiptStatus: receipt?.status,
-          });
           // Even though on-chain shows 0, buyCoffee should have added a stamp
           // We'll rely on the database to calculate the correct value from stampsAwarded
           // But first, let's try one more time after a longer delay
@@ -500,25 +455,13 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(customerWalletToUse, provider),
             ]);
             if (finalStampCount > 0n) {
-              console.log('✅ Stamp count updated after additional delay:', {
-                stampCount: finalStampCount.toString(),
-                pendingRewards: finalPendingRewards.toString(),
-              });
               stampCount = finalStampCount;
               pendingRewards = finalPendingRewards;
             }
           } catch (finalError) {
-            console.error('Final fetch attempt failed:', finalError);
+            // Final fetch attempt failed - continue with current values
           }
         }
-
-        console.log('Final on-chain values before database sync:', {
-          customerWallet: customerWalletToUse,
-          onChainStampCount: stampCount.toString(),
-          onChainPendingRewards: pendingRewards.toString(),
-          txHash: hash,
-          blockNumber: receipt?.blockNumber,
-        });
 
         // Sync to Supabase with on-chain values
         const syncResponse = await fetch('/api/stamps', {
@@ -551,37 +494,17 @@ const merchantContractAddress = useMemo(() => {
 
         if (!syncResponse.ok) {
           const errorData = await syncResponse.json().catch(() => ({}));
-          console.error('Database sync failed:', errorData);
           throw new Error(errorData?.error || 'Failed to sync purchase to database');
         }
 
         const syncResult = await syncResponse.json();
-        console.log('Database sync successful:', {
-          wallet: customerWalletToUse,
-          dbStampCount: syncResult.stamp_count,
-          dbPendingRewards: syncResult.pending_rewards,
-          onChainStampCount: stampCount.toString(),
-          onChainPendingRewards: pendingRewards.toString(),
-          timestamp: new Date().toISOString(),
-        });
         
         // Verify the database was updated correctly
         const dbStampCountNum = Number(syncResult.stamp_count);
         const onChainStampCountNum = Number(stampCount);
         if (dbStampCountNum !== onChainStampCountNum) {
-          console.error('❌ CRITICAL: Stamp count mismatch after sync!', {
-            wallet: customerWalletToUse,
-            onChain: onChainStampCountNum,
-            database: dbStampCountNum,
-            difference: onChainStampCountNum - dbStampCountNum,
-          });
           toast.error(`Warning: Database stamp count (${dbStampCountNum}) does not match on-chain (${onChainStampCountNum}). Please refresh the customer list.`);
         } else {
-          console.log('✅ Database stamp count verified:', {
-            wallet: customerWalletToUse,
-            stampCount: dbStampCountNum,
-            pendingRewards: Number(syncResult.pending_rewards),
-          });
           
           // Check if customer reached full stamp card (8/8)
           const rewardThreshold = Number(syncResult.reward_threshold || STAMPS_PER_REWARD);
@@ -639,36 +562,22 @@ const merchantContractAddress = useMemo(() => {
         
         // Force immediate refresh of customer list to show updated stamp count
         // Use multiple mechanisms to ensure UI updates
-        console.log('Triggering customer list refresh after transaction...');
         
         // 1. Immediate refresh token increment (forces CustomerList to re-render)
-        setOrderHistoryRefreshToken((token) => {
-          const newToken = token + 1;
-          console.log('Customer list refresh token incremented to:', newToken);
-          return newToken;
-        });
+        setOrderHistoryRefreshToken((token) => token + 1);
         
         // 2. Additional delayed refreshes to catch any race conditions
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => {
-            const newToken = token + 1;
-            console.log('Customer list refresh token incremented (delayed) to:', newToken);
-            return newToken;
-          });
+          setOrderHistoryRefreshToken((token) => token + 1);
         }, 2000);
         
         // 3. Another refresh after database propagation time
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => {
-            const newToken = token + 1;
-            console.log('Customer list refresh token incremented (final) to:', newToken);
-            return newToken;
-          });
+          setOrderHistoryRefreshToken((token) => token + 1);
         }, 4000);
         
         resetOrder();
       } catch (syncError) {
-        console.error('Syncing purchase to database failed:', syncError);
         toast.error('Payment successful, but database sync failed. The stamp was recorded on-chain.');
         // Show receipt even if database sync failed - fetch on-chain values
         try {
@@ -677,10 +586,6 @@ const merchantContractAddress = useMemo(() => {
             getStampCount(customerWalletToUse, customerSigner.provider),
             getPendingRewards(customerWalletToUse, customerSigner.provider),
           ]);
-          console.log('Fetched on-chain values for receipt (after sync failure):', {
-            stampCount: stampCount.toString(),
-            pendingRewards: pendingRewards.toString(),
-          });
           setReceiptData({
             items: orderItems,
             totalBWT: orderSummary.totalBwt,
@@ -696,7 +601,6 @@ const merchantContractAddress = useMemo(() => {
             pendingRewards: Number(pendingRewards),
           });
         } catch (fetchError) {
-          console.error('Failed to fetch on-chain stamp data:', fetchError);
           setReceiptData({
             items: orderItems,
             totalBWT: orderSummary.totalBwt,
@@ -719,18 +623,9 @@ const merchantContractAddress = useMemo(() => {
       }
       
     } catch (error) {
-      console.error('Payment failed:', error);
       const errorMessage = error?.message || '';
       const errorData = error?.data || error?.error?.data || {};
       const friendlyMessage = extractRpcError(error);
-
-      // Log detailed error for debugging
-      console.error('Payment error details:', {
-        message: errorMessage,
-        data: errorData,
-        friendlyMessage,
-        error: error,
-      });
 
       // Handle specific error cases
       if (friendlyMessage.includes("doesn't have enough funds") || friendlyMessage.includes('insufficient funds')) {
@@ -753,21 +648,6 @@ const merchantContractAddress = useMemo(() => {
         toast.error(`Transaction failed: ${revertReason}`);
       } else if (friendlyMessage.includes('Internal JSON-RPC error')) {
         toast.error('Transaction failed. Please check your token balance, allowance, and ensure you have enough ETH for gas.');
-        try {
-          const signerAddr = await customerSigner.getAddress();
-          console.error('RPC Error - this might be due to:', {
-            customerAddress: customerWalletToUse,
-            priceWei: priceWei.toString(),
-            signerAddress: signerAddr,
-            balance: tokenBalance ? ethers.formatUnits(tokenBalance, 18) : 'unknown',
-          });
-        } catch (logError) {
-          console.error('RPC Error details:', {
-            customerAddress: customerWalletToUse,
-            priceWei: priceWei.toString(),
-            error: error,
-          });
-        }
       } else {
         toast.error(friendlyMessage || 'Payment failed. Please try again.');
       }
@@ -828,7 +708,7 @@ const merchantContractAddress = useMemo(() => {
       });
       toast.info(`Reward email sent to ${email}.`);
     } catch (error) {
-      console.warn('Reward notification failed:', error);
+      // Reward notification failed - continue silently
     }
   }, []);
 
@@ -859,31 +739,12 @@ const merchantContractAddress = useMemo(() => {
         
         // Fetch the on-chain stamp count and pending rewards to sync with database
         const provider = customerSigner.provider;
-        console.log('Fetching on-chain stamp data (QR payment):', {
-          customerWallet: pendingOrder.customerWallet,
-          paymentTxHash: transactionHash,
-          stampTxHash: stampTxHash,
-          blockNumber: stampReceipt?.blockNumber,
-          receiptStatus: stampReceipt?.status,
-        });
         
         // Verify transaction succeeded
         // In ethers.js v6, receipt.status is 1 for success, 0 for failure
         const stampReceiptStatus = stampReceipt?.status;
         if (stampReceiptStatus === 0 || stampReceiptStatus === 0n) {
-          console.error('Stamp transaction failed or reverted:', {
-            stampTxHash: stampTxHash,
-            status: stampReceiptStatus,
-            statusType: typeof stampReceiptStatus,
-          });
           throw new Error('Stamp transaction failed. Stamp was not recorded.');
-        }
-        if (stampReceiptStatus !== 1 && stampReceiptStatus !== 1n) {
-          console.warn('Stamp transaction status is unknown:', {
-            stampTxHash: stampTxHash,
-            status: stampReceiptStatus,
-            statusType: typeof stampReceiptStatus,
-          });
         }
         
         // Retry logic: try up to 5 times with increasing delays to ensure we get updated state
@@ -900,15 +761,6 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(pendingOrder.customerWallet, provider),
             ]);
             
-            console.log(`Attempt ${retries + 1} (QR): Fetched on-chain values:`, {
-              customerWallet: pendingOrder.customerWallet,
-              stampCount: fetchedStampCount.toString(),
-              pendingRewards: fetchedPendingRewards.toString(),
-              previousStampCount: previousStampCount.toString(),
-              stampTxHash: stampTxHash,
-              blockNumber: stampReceipt?.blockNumber,
-            });
-            
             // Only update if we got a value that's different from previous (or if it's our first try)
             // This ensures we're getting the latest state
             if (fetchedStampCount > previousStampCount || retries === 0) {
@@ -918,7 +770,6 @@ const merchantContractAddress = useMemo(() => {
               
               // If stamp count increased, we know the state is updated
               if (fetchedStampCount > 0n && retries > 0) {
-                console.log('✅ Stamp count updated - state is fresh (QR)');
                 break;
               }
             }
@@ -934,7 +785,6 @@ const merchantContractAddress = useMemo(() => {
             await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           } catch (fetchError) {
-            console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
             if (retries === maxRetries - 1) {
               // On final retry failure, throw error
               throw fetchError;
@@ -949,12 +799,6 @@ const merchantContractAddress = useMemo(() => {
         // this indicates the stamp wasn't added on-chain, which shouldn't happen
         // In this case, we need to ensure the database still gets updated with at least +1 stamp
         if (stampCount === 0n) {
-          console.error('❌ ERROR: Stamp count is 0 after successful recordStamp transaction!', {
-            customerWallet: pendingOrder.customerWallet,
-            stampTxHash: stampTxHash,
-            blockNumber: stampReceipt?.blockNumber,
-            receiptStatus: stampReceipt?.status,
-          });
           // Even though on-chain shows 0, recordStamp should have added a stamp
           // We'll rely on the database to calculate the correct value from stampsAwarded
           // But first, let's try one more time after a longer delay
@@ -965,26 +809,13 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(pendingOrder.customerWallet, provider),
             ]);
             if (finalStampCount > 0n) {
-              console.log('✅ Stamp count updated after additional delay (QR):', {
-                stampCount: finalStampCount.toString(),
-                pendingRewards: finalPendingRewards.toString(),
-              });
               stampCount = finalStampCount;
               pendingRewards = finalPendingRewards;
             }
           } catch (finalError) {
-            console.error('Final fetch attempt failed (QR):', finalError);
+            // Final fetch attempt failed - continue with current values
           }
         }
-
-        console.log('Final on-chain values before database sync (QR payment):', {
-          customerWallet: pendingOrder.customerWallet,
-          onChainStampCount: stampCount.toString(),
-          onChainPendingRewards: pendingRewards.toString(),
-          paymentTxHash: transactionHash,
-          stampTxHash: stampTxHash,
-          blockNumber: stampReceipt?.blockNumber,
-        });
 
         const response = await fetch('/api/stamps', {
           method: 'POST',
@@ -1017,37 +848,17 @@ const merchantContractAddress = useMemo(() => {
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          console.error('Database sync failed (QR payment):', errorData);
           throw new Error(errorData?.error || 'Failed to sync purchase to database');
         }
 
         const payload = await response.json();
-        console.log('Database sync successful (QR payment):', {
-          wallet: pendingOrder.customerWallet,
-          dbStampCount: payload.stamp_count,
-          dbPendingRewards: payload.pending_rewards,
-          onChainStampCount: stampCount.toString(),
-          onChainPendingRewards: pendingRewards.toString(),
-          timestamp: new Date().toISOString(),
-        });
         
         // Verify the database was updated correctly
         const dbStampCountNum = Number(payload.stamp_count);
         const onChainStampCountNum = Number(stampCount);
         if (dbStampCountNum !== onChainStampCountNum) {
-          console.error('❌ CRITICAL: Stamp count mismatch after sync (QR payment)!', {
-            wallet: pendingOrder.customerWallet,
-            onChain: onChainStampCountNum,
-            database: dbStampCountNum,
-            difference: onChainStampCountNum - dbStampCountNum,
-          });
           toast.error(`Warning: Database stamp count (${dbStampCountNum}) does not match on-chain (${onChainStampCountNum}). Please refresh the customer list.`);
         } else {
-          console.log('✅ Database stamp count verified (QR payment):', {
-            wallet: pendingOrder.customerWallet,
-            stampCount: dbStampCountNum,
-            pendingRewards: Number(payload.pending_rewards),
-          });
           
           // Check if customer reached full stamp card (8/8)
           const rewardThreshold = Number(payload.reward_threshold || STAMPS_PER_REWARD);
@@ -1105,31 +916,18 @@ const merchantContractAddress = useMemo(() => {
         setIsReceiptVisible(true);
         
         // Force immediate refresh of customer list to show updated stamp count
-        console.log('Triggering customer list refresh after QR payment...');
         
         // 1. Immediate refresh token increment (forces CustomerList to re-render)
-        setOrderHistoryRefreshToken((token) => {
-          const newToken = token + 1;
-          console.log('Customer list refresh token incremented (QR) to:', newToken);
-          return newToken;
-        });
+        setOrderHistoryRefreshToken((token) => token + 1);
         
         // 2. Additional delayed refreshes to catch any race conditions
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => {
-            const newToken = token + 1;
-            console.log('Customer list refresh token incremented (QR delayed) to:', newToken);
-            return newToken;
-          });
+          setOrderHistoryRefreshToken((token) => token + 1);
         }, 2000);
         
         // 3. Another refresh after database propagation time
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => {
-            const newToken = token + 1;
-            console.log('Customer list refresh token incremented (QR final) to:', newToken);
-            return newToken;
-          });
+          setOrderHistoryRefreshToken((token) => token + 1);
         }, 4000);
         
         resetOrder();
@@ -1142,7 +940,6 @@ const merchantContractAddress = useMemo(() => {
           await notifyReward(payload.email, pendingOrder.customerWallet);
         }
       } catch (error) {
-        console.error('Recording stamp failed:', error);
         const message =
           error?.shortMessage ||
           error?.reason ||
@@ -1182,7 +979,6 @@ const merchantContractAddress = useMemo(() => {
     const targetMerchant =
       LOYALTY_CONTRACT_ADDRESS || MERCHANT_WALLET_ADDRESS || null;
     if (!targetMerchant) {
-      console.warn('No CoffeeLoyalty contract address configured. Transfer watcher disabled.');
       return () => {};
     }
 
@@ -1260,9 +1056,9 @@ const merchantContractAddress = useMemo(() => {
             <p className="mt-2 font-mono text-sm text-emerald-200">
               {merchantDisplayName || session?.user?.email || '—'}
             </p>
-            <p className="mt-1 text-[10px] uppercase tracking-[0.4em] text-emerald-200/70">
+            {/* <p className="mt-1 text-[10px] uppercase tracking-[0.4em] text-emerald-200/70">
               Auto logout after 2 min idle
-            </p>
+            </p> */}
           </div>
           <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
             <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Connected wallet</p>
@@ -1789,7 +1585,9 @@ const merchantContractAddress = useMemo(() => {
                         toast.error('Scanned QR does not contain a valid wallet address.');
                       }
                     }}
-                    onError={(error) => console.warn('QR scan error:', error?.message || error)}
+                    onError={() => {
+                      // QR scan error - continue silently
+                    }}
                     containerStyle={{ paddingBottom: '0', height: '280px' }}
                     videoStyle={{ borderRadius: '16px' }}
                   />

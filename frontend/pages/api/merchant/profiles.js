@@ -10,12 +10,10 @@ export default async function handler(req, res) {
   }
 
   if (!supabaseUrl) {
-    console.error('Supabase URL not configured');
     return res.status(500).json({ error: 'Supabase URL not configured', merchants: [] });
   }
 
   if (!supabaseServiceRoleKey) {
-    console.error('Supabase service role key not configured');
     return res.status(500).json({ error: 'Supabase service role key not configured. Set SUPABASE_SERVICE_ROLE_KEY in your environment variables.', merchants: [] });
   }
 
@@ -32,12 +30,10 @@ export default async function handler(req, res) {
     const { data, error: listError } = await adminClient.auth.admin.listUsers();
 
     if (listError) {
-      console.error('Error listing users:', listError);
       return res.status(500).json({ error: 'Failed to fetch merchant profiles', details: listError.message });
     }
 
     const users = data?.users || [];
-    console.log(`Found ${users.length} users in Supabase Auth`);
 
     // Get login codes from merchant_login_codes table
     const { data: loginCodes, error: codesError } = await adminClient
@@ -65,11 +61,8 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // Sort by newest first
 
-    console.log(`Mapped ${merchantProfiles.length} merchant profiles`);
-
     return res.status(200).json({ merchants: merchantProfiles });
   } catch (error) {
-    console.error('Error fetching merchant profiles:', error);
     return res.status(500).json({ error: 'Failed to fetch merchant profiles' });
   }
 }

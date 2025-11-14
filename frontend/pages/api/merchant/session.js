@@ -16,7 +16,6 @@ export default async function handler(req, res) {
   }
 
   if (!supabaseUrl || !supabaseServiceRoleKey) {
-    console.error('Supabase service role key not configured');
     return res.status(500).json({
       error: 'Server configuration error. SUPABASE_SERVICE_ROLE_KEY is required.',
     });
@@ -44,7 +43,6 @@ export default async function handler(req, res) {
     });
 
     if (linkError) {
-      console.error('Error generating magic link:', linkError);
       return res.status(500).json({ error: 'Failed to create session', details: linkError.message });
     }
 
@@ -76,7 +74,7 @@ export default async function handler(req, res) {
         refreshToken = url.searchParams.get('refresh_token');
       }
     } catch (parseError) {
-      console.error('Error parsing action link:', parseError);
+      // Error parsing action link - will return action link instead
     }
 
     // Return tokens if extracted successfully
@@ -99,7 +97,6 @@ export default async function handler(req, res) {
       message: 'Session link generated. Navigate to action link to complete sign-in.',
     });
   } catch (error) {
-    console.error('Error creating session:', error);
     return res.status(500).json({ error: 'Failed to create session', details: error.message });
   }
 }

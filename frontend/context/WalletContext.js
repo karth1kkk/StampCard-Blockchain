@@ -248,11 +248,6 @@ export const WalletProvider = ({ children }) => {
 
       persistAutoConnectPreference(true);
 
-      console.log(`[Wallet] ${role ?? 'session'} active account: ${selectedAddress}`);
-      console.log('[Wallet] Resolved RPC URL:', resolvedRpcUrl);
-      console.log(`[Wallet] Network chain ID: ${chainId}`);
-      console.log(`[Wallet] ${role ?? 'session'} balance (${NATIVE_SYMBOL}): ${formattedBalance}`);
-
       return {
         address: selectedAddress,
         signer,
@@ -390,9 +385,8 @@ export const WalletProvider = ({ children }) => {
           allowSwitch: false,
           role: 'auto',
         });
-        console.log('[Wallet] Auto-connected to previously authorised account:', selectedAddress);
       } catch (error) {
-        console.warn('Auto-connect skipped:', error?.message || error);
+        // Auto-connect skipped
       }
     };
 

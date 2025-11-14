@@ -37,11 +37,8 @@ export default function LoginPage({ onAuthenticated }) {
   useEffect(() => {
     const fetchProfiles = async () => {
       try {
-        console.log('Fetching merchant profiles...');
         const response = await fetch('/api/merchant/profiles');
         const data = await response.json();
-
-        console.log('Profiles API response:', { status: response.status, data });
 
         if (response.ok && data.merchants) {
           // Map API response to profile format
@@ -51,33 +48,12 @@ export default function LoginPage({ onAuthenticated }) {
             name: merchant.name,
             loginCode: merchant.loginCode,
           }));
-          console.log('Mapped profiles:', apiProfiles);
           setProfiles(apiProfiles);
         } else {
-          console.warn('API returned error or no merchants:', data);
-          // Fallback to local storage if API fails
-          const storedProfiles = localStorage.getItem('merchant_profiles');
-          if (storedProfiles) {
-            const parsed = JSON.parse(storedProfiles);
-            console.log('Using stored profiles from localStorage:', parsed);
-            setProfiles(parsed);
-          } else {
-            console.warn('No profiles found in API or localStorage');
-            setProfiles([]);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch profiles:', error);
-        // Fallback to local storage on error
-        const storedProfiles = localStorage.getItem('merchant_profiles');
-        if (storedProfiles) {
-          const parsed = JSON.parse(storedProfiles);
-          console.log('Using stored profiles from localStorage (error fallback):', parsed);
-          setProfiles(parsed);
-        } else {
-          console.warn('No profiles found after error');
           setProfiles([]);
         }
+      } catch (error) {
+        setProfiles([]);
       } finally {
         setLoadingProfiles(false);
       }
@@ -182,7 +158,6 @@ export default function LoginPage({ onAuthenticated }) {
             });
 
             if (verifyError || !verifyData?.session) {
-              console.error('OTP verification error:', verifyError);
               // Last resort: try using the action link directly
               if (sessionResult.actionLink) {
                 // Extract tokens from action link on frontend
@@ -212,7 +187,7 @@ export default function LoginPage({ onAuthenticated }) {
                     }
                   }
                 } catch (linkParseError) {
-                  console.error('Error parsing action link on frontend:', linkParseError);
+                  // Error parsing action link - continue to next fallback
                 }
               }
               throw new Error('Failed to verify session. Please try again.');
@@ -227,7 +202,6 @@ export default function LoginPage({ onAuthenticated }) {
               onAuthenticated(verifyData.session);
             }
           } catch (otpError) {
-            console.error('OTP verification failed:', otpError);
             throw new Error('Session verification failed. Please try again.');
           }
         } else if (sessionResult.tokenHash) {
@@ -251,21 +225,19 @@ export default function LoginPage({ onAuthenticated }) {
               return;
             }
           } catch (otpError2) {
-            console.error('OTP verification with tokenHash failed:', otpError2);
+            // OTP verification failed - continue to next fallback
           }
         }
 
         if (sessionResult.actionLink) {
           // Last resort: Navigate to the action link to complete sign-in
           // This will redirect and set the session automatically
-          console.log('Redirecting to action link to complete sign-in');
           window.location.href = sessionResult.actionLink;
           return;
         }
 
         throw new Error('Failed to create session. Please try again.');
       } catch (authError) {
-        console.error('Merchant sign-in failed:', authError);
         const message = authError?.message || 'Unable to sign in.';
         setError(message);
         toast.error(message);

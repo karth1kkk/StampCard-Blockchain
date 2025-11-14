@@ -44,8 +44,6 @@ export default async function handler(req, res) {
       });
 
       // In production, send email with code via Supabase or email service
-      console.log(`[DEV] Temporary 6-digit code for ${email}: ${sixDigitCode}`);
-
       // TODO: Integrate with email service to send code
       // You can use Supabase Edge Functions or a service like SendGrid, Resend, etc.
 
@@ -116,7 +114,7 @@ export default async function handler(req, res) {
             }
           }
         } catch (error) {
-          console.error('Error checking login code from database:', error);
+          // Error checking login code - will return invalid code error below
         }
       }
 

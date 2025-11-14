@@ -78,13 +78,10 @@ export default async function handler(req, res) {
           });
 
         if (insertError) {
-          console.error('Failed to store login code:', insertError);
-        } else {
-          console.log(`[REG] User set login code for ${email}: ${loginCode.trim()}`);
+          // Failed to store login code - continue anyway
         }
       } catch (updateError) {
-        console.error('Failed to set login code during registration:', updateError);
-        // Continue anyway - code can be set manually later
+        // Failed to set login code during registration - continue anyway
       }
     }
 
@@ -94,7 +91,6 @@ export default async function handler(req, res) {
       email: user?.email ?? email,
     });
   } catch (error) {
-    console.error('Merchant registration failed:', error);
     return res.status(500).json({ error: error?.message || 'Failed to register merchant account.' });
   }
 }
