@@ -123,6 +123,8 @@ export default function POSHome() {
     <>
       <Head>
         <title>BrewToken POS</title>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="alternate icon" href="/favicon.ico" />
       </Head>
       {session ? (
         <POSDashboard session={session} onSignOut={handleSignOut} onSessionExpired={handleSessionExpired} />

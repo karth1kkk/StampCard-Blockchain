@@ -1,0 +1,21 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background with gradient -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Rounded square background -->
+  <rect x="4" y="4" width="56" height="56" rx="12" fill="url(#bgGradient)"/>
+  
+  <!-- Coffee bean accent (optional, subtle) -->
+  <ellipse cx="18" cy="20" rx="4" ry="6" fill="#ffffff" opacity="0.1" transform="rotate(-20 18 20)"/>
+  
+  <!-- BWT Text - bold and centered -->
+  <text x="32" y="42" font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" font-size="26" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="-1.5">BWT</text>
+  
+  <!-- Accent dot (representing coffee) -->
+  <circle cx="48" cy="18" r="3" fill="#ffffff" opacity="0.3"/>
+</svg>

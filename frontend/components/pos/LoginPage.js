@@ -296,7 +296,7 @@ export default function LoginPage({ onAuthenticated }) {
               ) : profiles.length > 0 ? (
                 /* Profile Grid - Centered */
                 <div className="mb-8 flex justify-center">
-                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                  <div className="flex flex-wrap justify-center gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                     {profiles.map((profile) => (
                       <button
                         key={profile.email || profile.id}

@@ -95,6 +95,8 @@ export default function MerchantHomePage() {
     <>
       <Head>
         <title>Merchant Dashboard · BrewToken Loyalty</title>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="alternate icon" href="/favicon.ico" />
       </Head>
       <div className="min-h-screen bg-slate-950/96">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-12 sm:px-6 lg:px-8">

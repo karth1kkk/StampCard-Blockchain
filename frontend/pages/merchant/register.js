@@ -77,6 +77,8 @@ export default function MerchantRegisterPage() {
     <>
       <Head>
         <title>Register Merchant · BrewToken Loyalty</title>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="alternate icon" href="/favicon.ico" />
       </Head>
       <div className="flex min-h-screen flex-col bg-slate-950 text-white lg:flex-row">
         <div className="flex flex-1 flex-col justify-between bg-gradient-to-br from-emerald-500/20 via-sky-500/20 to-indigo-600/10 px-10 py-12">
@@ -175,9 +177,6 @@ export default function MerchantRegisterPage() {
                   className="mt-2 w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-300/70 focus:ring-1 focus:ring-emerald-300/50"
                   required
                 />
-                <p className="mt-2 text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                  Hint: default secret is {SECRET_CODE}. Update MERCHANT_REGISTRATION_SECRET to rotate this code.
-                </p>
               </label>
               <button
                 type="submit"

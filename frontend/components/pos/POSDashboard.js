@@ -110,7 +110,7 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
   }, [disconnectCustomerWallet]);
 
   useInactivityTimer({
-    timeoutMs: 2 * 60 * 1000,
+    timeoutMs: 1 * 60 * 1000, // 1 minute
     onTimeout: () => {
       setSessionTimedOut(true);
       if (typeof onSessionExpired === 'function') {
@@ -120,8 +120,9 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
     isEnabled: Boolean(session),
   });
 
+  // Update time every second for real-time display
   useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 30_000);
+    const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 

@@ -31,15 +31,23 @@ export function useInactivityTimer({ timeoutMs, onTimeout, isEnabled = true }) {
       }, timeoutRef.current);
     };
 
+    // Start the timer immediately
     resetTimer();
 
-    DEFAULT_EVENTS.forEach((event) => window.addEventListener(event, resetTimer, { passive: true }));
+    // Listen to user activity events to reset the timer
+    DEFAULT_EVENTS.forEach((event) => {
+      window.addEventListener(event, resetTimer, { passive: true });
+    });
 
     return () => {
+      // Cleanup: clear timer and remove event listeners
       if (timerRef.current) {
         clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
-      DEFAULT_EVENTS.forEach((event) => window.removeEventListener(event, resetTimer));
+      DEFAULT_EVENTS.forEach((event) => {
+        window.removeEventListener(event, resetTimer);
+      });
     };
   }, [isEnabled]);
 }
