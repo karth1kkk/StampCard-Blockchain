@@ -547,21 +547,8 @@ const recordPurchaseLegacy = async ({
     throw upsertError;
   }
 
-  const { error: insertPurchaseError } = await client.from('purchase_history').insert({
-    wallet_address: wallet,
-    product_id: productId || null,
-    product_name: productName || null,
-    price_bwt: price,
-    tx_hash: txHash,
-    block_number: blockNumber || null,
-    outlet_id: null,
-    metadata: metadata || null,
-    created_at: now,
-  });
-
-  if (insertPurchaseError && insertPurchaseError.code !== '23505') {
-    throw insertPurchaseError;
-  }
+  // Legacy: Orders are stored in orders table (already handled in main recordPurchase function)
+  // For legacy schema, we just update customers table (done above)
 
   return {
     wallet_address: wallet,
@@ -804,15 +791,15 @@ export const getPurchaseHistory = async (walletAddress, limit = 50) => {
       throw error;
     }
 
-    // Fallback to legacy purchase_history table
+    // Legacy fallback: Use orders table if purchase_history doesn't exist
     const legacyQuery = client
-      .from('purchase_history')
+      .from('orders')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(limit);
 
     if (wallet) {
-      legacyQuery.eq('wallet_address', wallet);
+      legacyQuery.eq('customer_wallet', wallet);
     }
 
     const { data, error: legacyError } = await legacyQuery;
@@ -845,72 +832,6 @@ export const getRewardHistory = async (walletAddress, limit = 25) => {
   }
 
   return data || [];
-};
-
-export const getOutlets = async () => {
-  const client = requireSupabase();
-  const { data, error } = await client
-    .from('outlets')
-    .select('*')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('Error getting outlets:', error);
-    throw error;
-  }
-
-  return data || [];
-};
-
-export const getOutlet = async (id) => {
-  const client = requireSupabase();
-  const { data, error } = await client
-    .from('outlets')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-
-  if (error && error.code !== 'PGRST116') {
-    console.error('Error getting outlet:', error);
-    throw error;
-  }
-
-  return data || null;
-};
-
-export const createOutlet = async ({
-  name,
-  address,
-  ownerAddress,
-  merchantAddress,
-  location,
-  website,
-  challengeUrl,
-  signerPublicKey,
-}) => {
-  const client = requireSupabase();
-  const { data, error } = await client
-    .from('outlets')
-    .insert({
-      name,
-      address,
-      owner_address: ownerAddress,
-      merchant_address: merchantAddress,
-      location,
-      website,
-      challenge_url: challengeUrl,
-      signer_public_key: signerPublicKey,
-      created_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error('Error creating outlet:', error);
-    throw error;
-  }
-
-  return { lastInsertRowid: data?.id || null };
 };
 
 export const listProducts = async () => {

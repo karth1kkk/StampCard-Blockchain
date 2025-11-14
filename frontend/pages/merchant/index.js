@@ -147,7 +147,7 @@ export default function MerchantHomePage() {
               </p>
               <p className="mt-2 text-xs text-emerald-200">
                 <Link href="/merchant/register" className="underline hover:text-emerald-100">
-                  Register a merchant outlet →
+                  Register a merchant account →
                 </Link>
               </p>
             </div>

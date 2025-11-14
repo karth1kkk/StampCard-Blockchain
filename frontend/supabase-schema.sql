@@ -3,13 +3,6 @@
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
-CREATE TABLE IF NOT EXISTS merchants (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS customers (
   wallet_address TEXT PRIMARY KEY,
   email TEXT,
@@ -47,19 +40,6 @@ CREATE TABLE IF NOT EXISTS reward_history (
   reward_amount_bwt NUMERIC(24, 6),
   tx_hash TEXT,
   block_number BIGINT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS outlets (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  address TEXT,
-  owner_address TEXT,
-  merchant_address TEXT,
-  location TEXT,
-  website TEXT,
-  challenge_url TEXT,
-  signer_public_key TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

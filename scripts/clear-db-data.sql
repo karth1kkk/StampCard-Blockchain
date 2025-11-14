@@ -10,10 +10,8 @@ TRUNCATE TABLE
   reward_history,
   stamps,
   orders,
-  purchase_history,  -- Legacy table (if it exists)
   customers,
-  merchants,
-  outlets
+  products
 CASCADE;
 
 -- Option 2: Using DELETE (Alternative - more control, respects foreign key constraints)
@@ -22,12 +20,8 @@ CASCADE;
 -- DELETE FROM reward_history;
 -- DELETE FROM stamps;
 -- DELETE FROM orders;
--- DELETE FROM purchase_history;  -- Legacy table (if it exists)
--- DELETE FROM outlets;
 -- DELETE FROM customers;
--- DELETE FROM merchants;
+-- DELETE FROM products;
 
--- Reset sequences (for tables with SERIAL/auto-increment columns)
--- Only needed if using DELETE (TRUNCATE resets sequences automatically)
--- ALTER SEQUENCE outlets_id_seq RESTART WITH 1;
+-- Note: TRUNCATE automatically resets sequences. No need to manually reset.
 

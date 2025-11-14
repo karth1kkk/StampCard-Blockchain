@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('Merchant registration failed:', error);
-    return res.status(500).json({ error: error?.message || 'Failed to register merchant outlet.' });
+    return res.status(500).json({ error: error?.message || 'Failed to register merchant account.' });
   }
 }
 
