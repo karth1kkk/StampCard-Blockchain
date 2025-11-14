@@ -3,7 +3,6 @@ import dynamic from 'next/dynamic';
 import { ethers } from 'ethers';
 import { toast } from 'react-toastify';
 import { AnimatePresence, motion } from 'framer-motion';
-import { COFFEE_MENU } from '../../constants/products';
 import QRModal from './QRModal';
 import ReceiptModal from './ReceiptModal';
 import FundPoolModal from './FundPoolModal';
@@ -88,6 +87,8 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
   const [isReceiptVisible, setIsReceiptVisible] = useState(false);
   const [isFundPoolModalOpen, setIsFundPoolModalOpen] = useState(false);
   const [merchantDisplayName, setMerchantDisplayName] = useState('');
+  const [coffeeMenu, setCoffeeMenu] = useState([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
 
   const handleConnectMerchant = useCallback(async () => {
     try {
@@ -143,6 +144,28 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
     setMerchantDisplayName(displayName);
   }, [session?.user]);
 
+  // Fetch products from database
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        setIsLoadingProducts(true);
+        const response = await fetch('/api/products');
+        if (!response.ok) {
+          throw new Error('Failed to fetch products');
+        }
+        const data = await response.json();
+        setCoffeeMenu(data.products || []);
+      } catch (error) {
+        console.error('Error fetching products:', error);
+        toast.error('Failed to load coffee menu');
+      } finally {
+        setIsLoadingProducts(false);
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
 const merchantContractAddress = useMemo(() => {
   const raw = MERCHANT_WALLET_ADDRESS || LOYALTY_CONTRACT_ADDRESS;
   if (!raw) {
@@ -158,7 +181,7 @@ const merchantContractAddress = useMemo(() => {
   const orderItems = useMemo(() => {
     return Object.entries(quantities)
       .map(([productId, quantity]) => {
-        const product = COFFEE_MENU.find((item) => item.id === productId);
+        const product = coffeeMenu.find((item) => item.id === productId);
         if (!product || quantity <= 0) {
           return null;
         }
@@ -398,11 +421,12 @@ const merchantContractAddress = useMemo(() => {
           });
         }
         
-        // Retry logic: try up to 3 times with increasing delays
+        // Retry logic: try up to 5 times with increasing delays to ensure we get updated state
         let stampCount = 0n;
         let pendingRewards = 0n;
         let retries = 0;
-        const maxRetries = 3;
+        const maxRetries = 5;
+        let previousStampCount = 0n;
         
         while (retries < maxRetries) {
           try {
@@ -411,38 +435,81 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(customerWalletToUse, provider),
             ]);
             
-            stampCount = fetchedStampCount;
-            pendingRewards = fetchedPendingRewards;
-            
             console.log(`Attempt ${retries + 1}: Fetched on-chain values:`, {
               customerWallet: customerWalletToUse,
-              stampCount: stampCount.toString(),
-              pendingRewards: pendingRewards.toString(),
+              stampCount: fetchedStampCount.toString(),
+              pendingRewards: fetchedPendingRewards.toString(),
+              previousStampCount: previousStampCount.toString(),
               txHash: hash,
+              blockNumber: receipt?.blockNumber,
             });
             
-            // Always retry maxRetries times to ensure we get the latest state
-            if (retries < maxRetries - 1) {
-              await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            // Only update if we got a value that's different from previous (or if it's our first try)
+            // This ensures we're getting the latest state
+            if (fetchedStampCount > previousStampCount || retries === 0) {
+              stampCount = fetchedStampCount;
+              pendingRewards = fetchedPendingRewards;
+              previousStampCount = fetchedStampCount;
+              
+              // If stamp count increased, we know the state is updated
+              if (fetchedStampCount > 0n && retries > 0) {
+                console.log('✅ Stamp count updated - state is fresh');
+                break;
+              }
             }
+            
+            // If we're at max retries, use the latest values we got
+            if (retries === maxRetries - 1) {
+              stampCount = fetchedStampCount;
+              pendingRewards = fetchedPendingRewards;
+              break;
+            }
+            
+            // Wait before next retry (exponential backoff: 1s, 2s, 3s, 4s)
+            await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           } catch (fetchError) {
             console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
             if (retries === maxRetries - 1) {
+              // On final retry failure, throw error
               throw fetchError;
             }
+            // Wait before retry
             await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           }
         }
         
-        // Warn if stamp count is still 0 after successful transaction
+        // Critical check: If stamp count is still 0 after successful buyCoffee transaction,
+        // this indicates the stamp wasn't added on-chain, which shouldn't happen
+        // In this case, we need to ensure the database still gets updated with at least +1 stamp
         if (stampCount === 0n) {
-          console.warn('WARNING: Stamp count is 0 after successful transaction. This may indicate a contract issue.', {
+          console.error('❌ ERROR: Stamp count is 0 after successful buyCoffee transaction!', {
             customerWallet: customerWalletToUse,
             txHash: hash,
             blockNumber: receipt?.blockNumber,
+            receiptStatus: receipt?.status,
           });
+          // Even though on-chain shows 0, buyCoffee should have added a stamp
+          // We'll rely on the database to calculate the correct value from stampsAwarded
+          // But first, let's try one more time after a longer delay
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const [finalStampCount, finalPendingRewards] = await Promise.all([
+              getStampCount(customerWalletToUse, provider),
+              getPendingRewards(customerWalletToUse, provider),
+            ]);
+            if (finalStampCount > 0n) {
+              console.log('✅ Stamp count updated after additional delay:', {
+                stampCount: finalStampCount.toString(),
+                pendingRewards: finalPendingRewards.toString(),
+              });
+              stampCount = finalStampCount;
+              pendingRewards = finalPendingRewards;
+            }
+          } catch (finalError) {
+            console.error('Final fetch attempt failed:', finalError);
+          }
         }
 
         console.log('Final on-chain values before database sync:', {
@@ -536,21 +603,34 @@ const merchantContractAddress = useMemo(() => {
 
         toast.success('Payment and stamp recorded successfully.');
         
-        // Force refresh customer list - use multiple mechanisms to ensure UI updates
-        // 1. Immediate refresh token increment
-        setOrderHistoryRefreshToken((token) => token + 1);
+        // Force immediate refresh of customer list to show updated stamp count
+        // Use multiple mechanisms to ensure UI updates
+        console.log('Triggering customer list refresh after transaction...');
         
-        // 2. Additional delayed refresh to catch any race conditions
-        setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => token + 1);
-          console.log('Customer list refresh triggered after transaction');
-        }, 1000);
+        // 1. Immediate refresh token increment (forces CustomerList to re-render)
+        setOrderHistoryRefreshToken((token) => {
+          const newToken = token + 1;
+          console.log('Customer list refresh token incremented to:', newToken);
+          return newToken;
+        });
         
-        // 3. Another refresh after a longer delay to ensure database propagation
+        // 2. Additional delayed refreshes to catch any race conditions
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => token + 1);
-          console.log('Customer list refresh triggered (final) after transaction');
-        }, 2500);
+          setOrderHistoryRefreshToken((token) => {
+            const newToken = token + 1;
+            console.log('Customer list refresh token incremented (delayed) to:', newToken);
+            return newToken;
+          });
+        }, 2000);
+        
+        // 3. Another refresh after database propagation time
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => {
+            const newToken = token + 1;
+            console.log('Customer list refresh token incremented (final) to:', newToken);
+            return newToken;
+          });
+        }, 4000);
         
         resetOrder();
       } catch (syncError) {
@@ -772,11 +852,12 @@ const merchantContractAddress = useMemo(() => {
           });
         }
         
-        // Retry logic: try up to 3 times with increasing delays
+        // Retry logic: try up to 5 times with increasing delays to ensure we get updated state
         let stampCount = 0n;
         let pendingRewards = 0n;
         let retries = 0;
-        const maxRetries = 3;
+        const maxRetries = 5;
+        let previousStampCount = 0n;
         
         while (retries < maxRetries) {
           try {
@@ -785,38 +866,81 @@ const merchantContractAddress = useMemo(() => {
               getPendingRewards(pendingOrder.customerWallet, provider),
             ]);
             
-            stampCount = fetchedStampCount;
-            pendingRewards = fetchedPendingRewards;
-            
             console.log(`Attempt ${retries + 1} (QR): Fetched on-chain values:`, {
               customerWallet: pendingOrder.customerWallet,
-              stampCount: stampCount.toString(),
-              pendingRewards: pendingRewards.toString(),
+              stampCount: fetchedStampCount.toString(),
+              pendingRewards: fetchedPendingRewards.toString(),
+              previousStampCount: previousStampCount.toString(),
               stampTxHash: stampTxHash,
+              blockNumber: stampReceipt?.blockNumber,
             });
             
-            // Always retry maxRetries times to ensure we get the latest state
-            if (retries < maxRetries - 1) {
-              await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
+            // Only update if we got a value that's different from previous (or if it's our first try)
+            // This ensures we're getting the latest state
+            if (fetchedStampCount > previousStampCount || retries === 0) {
+              stampCount = fetchedStampCount;
+              pendingRewards = fetchedPendingRewards;
+              previousStampCount = fetchedStampCount;
+              
+              // If stamp count increased, we know the state is updated
+              if (fetchedStampCount > 0n && retries > 0) {
+                console.log('✅ Stamp count updated - state is fresh (QR)');
+                break;
+              }
             }
+            
+            // If we're at max retries, use the latest values we got
+            if (retries === maxRetries - 1) {
+              stampCount = fetchedStampCount;
+              pendingRewards = fetchedPendingRewards;
+              break;
+            }
+            
+            // Wait before next retry (exponential backoff: 1s, 2s, 3s, 4s)
+            await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           } catch (fetchError) {
             console.error(`Error fetching on-chain values (attempt ${retries + 1}):`, fetchError);
             if (retries === maxRetries - 1) {
+              // On final retry failure, throw error
               throw fetchError;
             }
+            // Wait before retry
             await new Promise((resolve) => setTimeout(resolve, 1000 * (retries + 1)));
             retries++;
           }
         }
         
-        // Warn if stamp count is still 0 after successful transaction
+        // Critical check: If stamp count is still 0 after successful recordStamp transaction,
+        // this indicates the stamp wasn't added on-chain, which shouldn't happen
+        // In this case, we need to ensure the database still gets updated with at least +1 stamp
         if (stampCount === 0n) {
-          console.warn('WARNING: Stamp count is 0 after successful transaction. This may indicate a contract issue.', {
+          console.error('❌ ERROR: Stamp count is 0 after successful recordStamp transaction!', {
             customerWallet: pendingOrder.customerWallet,
             stampTxHash: stampTxHash,
             blockNumber: stampReceipt?.blockNumber,
+            receiptStatus: stampReceipt?.status,
           });
+          // Even though on-chain shows 0, recordStamp should have added a stamp
+          // We'll rely on the database to calculate the correct value from stampsAwarded
+          // But first, let's try one more time after a longer delay
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const [finalStampCount, finalPendingRewards] = await Promise.all([
+              getStampCount(pendingOrder.customerWallet, provider),
+              getPendingRewards(pendingOrder.customerWallet, provider),
+            ]);
+            if (finalStampCount > 0n) {
+              console.log('✅ Stamp count updated after additional delay (QR):', {
+                stampCount: finalStampCount.toString(),
+                pendingRewards: finalPendingRewards.toString(),
+              });
+              stampCount = finalStampCount;
+              pendingRewards = finalPendingRewards;
+            }
+          } catch (finalError) {
+            console.error('Final fetch attempt failed (QR):', finalError);
+          }
         }
 
         console.log('Final on-chain values before database sync (QR payment):', {
@@ -911,21 +1035,33 @@ const merchantContractAddress = useMemo(() => {
         });
         setIsReceiptVisible(true);
         
-        // Force refresh customer list - use multiple mechanisms to ensure UI updates
-        // 1. Immediate refresh token increment
-        setOrderHistoryRefreshToken((token) => token + 1);
+        // Force immediate refresh of customer list to show updated stamp count
+        console.log('Triggering customer list refresh after QR payment...');
         
-        // 2. Additional delayed refresh to catch any race conditions
-        setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => token + 1);
-          console.log('Customer list refresh triggered after QR payment');
-        }, 1000);
+        // 1. Immediate refresh token increment (forces CustomerList to re-render)
+        setOrderHistoryRefreshToken((token) => {
+          const newToken = token + 1;
+          console.log('Customer list refresh token incremented (QR) to:', newToken);
+          return newToken;
+        });
         
-        // 3. Another refresh after a longer delay to ensure database propagation
+        // 2. Additional delayed refreshes to catch any race conditions
         setTimeout(() => {
-          setOrderHistoryRefreshToken((token) => token + 1);
-          console.log('Customer list refresh triggered (final) after QR payment');
-        }, 2500);
+          setOrderHistoryRefreshToken((token) => {
+            const newToken = token + 1;
+            console.log('Customer list refresh token incremented (QR delayed) to:', newToken);
+            return newToken;
+          });
+        }, 2000);
+        
+        // 3. Another refresh after database propagation time
+        setTimeout(() => {
+          setOrderHistoryRefreshToken((token) => {
+            const newToken = token + 1;
+            console.log('Customer list refresh token incremented (QR final) to:', newToken);
+            return newToken;
+          });
+        }, 4000);
         
         resetOrder();
 
@@ -1220,32 +1356,46 @@ const merchantContractAddress = useMemo(() => {
               </div>
             </div>
             <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {COFFEE_MENU.map((item) => {
+              {coffeeMenu.map((item) => {
                 const quantity = quantities[item.id] || 0;
                 return (
                   <button
                     key={item.id}
                     type="button"
                     onClick={() => updateQuantity(item.id, 1)}
-                    className="group relative flex h-full flex-col justify-between overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-950 to-black p-6 text-left transition hover:border-emerald-300/60 hover:shadow-lg hover:shadow-emerald-500/20"
+                    className="group relative flex h-full flex-col justify-between overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-950 to-black text-left transition hover:border-emerald-300/60 hover:shadow-lg hover:shadow-emerald-500/20"
                   >
                     <div className="absolute inset-0 -z-10 bg-gradient-to-br from-emerald-400/0 via-emerald-400/10 to-sky-400/0 opacity-0 transition group-hover:opacity-100" />
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Add to order</p>
-                      <h3 className="mt-3 text-lg font-semibold text-white">{item.name}</h3>
-                      <p className="mt-2 text-sm text-slate-300">{item.description}</p>
+                    {/* Product Image */}
+                    <div className="relative h-40 w-full overflow-hidden">
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                        onError={(e) => {
+                          e.target.src = 'https://via.placeholder.com/400x400/1e293b/64748b?text=' + encodeURIComponent(item.name);
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/0 to-black/0" />
                     </div>
-                    <div className="mt-6 flex items-center justify-between text-sm text-emerald-200">
-                      <span>{item.price} {BREW_TOKEN_SYMBOL}</span>
-                      {quantity > 0 ? (
-                        <span className="rounded-full bg-emerald-400/20 px-3 py-1 text-xs font-semibold text-emerald-100">
-                          x{quantity}
-                        </span>
-                      ) : (
-                        <span className="text-xs uppercase tracking-[0.35em] text-emerald-100/70">
-                          tap to add
-                        </span>
-                      )}
+                    <div className="flex flex-1 flex-col justify-between p-6">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Add to order</p>
+                        <h3 className="mt-3 text-lg font-semibold text-white">{item.name}</h3>
+                        <p className="mt-2 text-sm text-slate-300">{item.description}</p>
+                      </div>
+                      <div className="mt-6 flex items-center justify-between text-sm text-emerald-200">
+                        <span>{item.price} {BREW_TOKEN_SYMBOL}</span>
+                        {quantity > 0 ? (
+                          <span className="rounded-full bg-emerald-400/20 px-3 py-1 text-xs font-semibold text-emerald-100">
+                            x{quantity}
+                          </span>
+                        ) : (
+                          <span className="text-xs uppercase tracking-[0.35em] text-emerald-100/70">
+                            tap to add
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </button>
                 );

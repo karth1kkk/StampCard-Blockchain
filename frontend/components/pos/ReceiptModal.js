@@ -1,7 +1,6 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BREW_TOKEN_SYMBOL } from '../../lib/constants';
-import { COFFEE_MENU } from '../../constants/products';
 
 const formatDate = (value) => {
   if (!value) return new Date().toLocaleString();
@@ -18,6 +17,27 @@ const shortenAddress = (value) => (value ? `${value.slice(0, 6)}…${value.slice
 const shortenTxHash = (value) => (value ? `${value.slice(0, 10)}…${value.slice(-8)}` : '—');
 
 export default function ReceiptModal({ isOpen, onClose, receiptData }) {
+  const [coffeeMenu, setCoffeeMenu] = useState([]);
+
+  // Fetch products from database
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const response = await fetch('/api/products');
+        if (!response.ok) {
+          throw new Error('Failed to fetch products');
+        }
+        const data = await response.json();
+        setCoffeeMenu(data.products || []);
+      } catch (error) {
+        console.error('Error fetching products:', error);
+        // Don't show error toast for ReceiptModal as it's non-critical
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
   const receiptPayload = useMemo(() => {
     if (!receiptData) return null;
     
@@ -80,7 +100,7 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
       '───────────────────────────────────────────────────────',
       ...receiptPayload.items.map((item, idx) => {
         const productId = item.id || item.product_id;
-        const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+        const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
         const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';
         const itemDescription = item.description || fullProduct?.description || null;
         const itemPrice = item.price || item.price_bwt || fullProduct?.price || 0;
@@ -129,7 +149,7 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
           },
           items: receiptPayload.items.map((item) => {
             const productId = item.id || item.product_id;
-            const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+            const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
             return {
               id: productId || null,
               name: item.name || item.product_name || fullProduct?.name || 'Coffee',
@@ -294,7 +314,7 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                   {receiptPayload.items.map((item, idx) => {
                     // Try to get full product details from COFFEE_MENU
                     const productId = item.id || item.product_id;
-                    const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+                    const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
                     const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';
                     const itemDescription = item.description || fullProduct?.description || null;
                     const itemPrice = item.price || item.price_bwt || fullProduct?.price || 0;
@@ -388,7 +408,7 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                         },
                         items: receiptPayload.items.map((item) => {
                           const productId = item.id || item.product_id;
-                          const fullProduct = productId ? COFFEE_MENU.find((p) => p.id === productId) : null;
+                          const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
                           return {
                             id: productId || null,
                             name: item.name || item.product_name || fullProduct?.name || 'Coffee',

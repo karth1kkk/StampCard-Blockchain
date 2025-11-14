@@ -17,29 +17,23 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
     }
     setLoading(true);
     try {
-      const response = await fetch('/api/customers?scope=all', {
+      // Add cache-busting query parameter to ensure fresh data
+      const cacheBuster = `?scope=all&_t=${Date.now()}`;
+      const response = await fetch(`/api/customers${cacheBuster}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        cache: 'no-store', // Ensure no caching
       });
       if (!response.ok) {
         throw new Error((await response.json())?.error || 'Unable to load customer list');
       }
       const payload = await response.json();
       const customersList = payload.customers || [];
-      console.log('CustomerList: Fetched customers:', {
-        count: customersList.length,
-        timestamp: new Date().toISOString(),
-        customers: customersList.map((c) => ({
-          wallet: c.customer_wallet || c.wallet_address,
-          stampCount: c.stamp_count,
-          pendingRewards: c.pending_rewards,
-          rewardThreshold: c.reward_threshold,
-          lifetimeStamps: c.lifetime_stamps,
-          email: c.email,
-        })),
-      });
-      setCustomers(customersList);
+      
+      // Create a new array reference to ensure React detects the change
+      const newCustomers = customersList.map(c => ({ ...c }));
+      setCustomers(newCustomers);
     } catch (error) {
       console.error('Customer list error:', error);
       toast.error(error?.message || 'Unable to load customers');
@@ -49,8 +43,24 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
   }, [accessToken]);
 
   useEffect(() => {
+    if (!accessToken) {
+      return;
+    }
     fetchCustomers();
-  }, [fetchCustomers, refreshToken]); // Also refresh when refreshToken changes
+  }, [refreshToken, accessToken]);
+
+  // Set up polling to refresh customer list every 3 seconds
+  useEffect(() => {
+    if (!accessToken) {
+      return;
+    }
+    
+    const interval = setInterval(() => {
+      fetchCustomers();
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, [accessToken, fetchCustomers, refreshToken]);
 
   const totalStats = useMemo(() => {
     return customers.reduce(
@@ -359,26 +369,14 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
               </tr>
             </thead>
             <tbody className="divide-y divide-white/10">
-              {(() => {
-                // Deduplicate customers by wallet address (keep the most recent one)
-                const uniqueCustomers = new Map();
-                customers.forEach((customer) => {
-                  const wallet = (customer.customer_wallet || customer.wallet_address)?.toLowerCase();
-                  if (!wallet) return;
-                  
-                  const existing = uniqueCustomers.get(wallet);
-                  if (!existing || new Date(customer.last_updated || 0) > new Date(existing.last_updated || 0)) {
-                    uniqueCustomers.set(wallet, customer);
-                  }
-                });
-                
-                return Array.from(uniqueCustomers.values()).map((customer) => {
+              {customers.map((customer) => {
                   const wallet = customer.customer_wallet || customer.wallet_address;
                   const pending = Number(customer.pending_rewards || 0);
                   const rewardEligible = customer.reward_eligible || pending > 0;
-                  const stampCount = Number(customer.stamp_count || 0);
-                  const lifetimeStamps = Number(customer.lifetime_stamps || 0);
-                  const rewardThreshold = Number(customer.reward_threshold || process.env.NEXT_PUBLIC_REWARD_THRESHOLD || 8);
+                  
+                  const stampCount = Number(customer.stamp_count ?? 0);
+                  const lifetimeStamps = Number(customer.lifetime_stamps ?? 0);
+                  const rewardThreshold = Number(customer.reward_threshold ?? process.env.NEXT_PUBLIC_REWARD_THRESHOLD ?? 8);
                   const lastUpdated = customer.last_updated
                     ? new Date(customer.last_updated).toLocaleString()
                     : '—';
@@ -386,9 +384,6 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                     ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}`
                     : 'Unknown';
                   
-                  // Calculate which card number they're on (1st, 2nd, 3rd, etc.)
-                  // Cards completed = pending rewards
-                  // Current card number = cards completed + 1
                   const cardsCompleted = pending;
                   const currentCardNumber = cardsCompleted + 1;
                   
@@ -399,6 +394,7 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                       <td className="px-4 py-3">
                         <div className="w-64">
                           <StampCard
+                            key={`${wallet}-stamp${stampCount}-pending${pending}-updated${lastUpdated}`}
                             stampCount={stampCount}
                             pendingRewards={pending}
                             rewardThreshold={rewardThreshold}
@@ -447,8 +443,7 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                     </td>
                   </tr>
                   );
-                });
-              })()}
+                })}
             </tbody>
           </table>
         </div>

@@ -2,14 +2,14 @@ import { useMemo } from 'react';
 import { STAMPS_PER_REWARD } from '../../lib/constants';
 
 export default function StampCard({ 
-  stampCount = 0, 
+  stampCount, 
   pendingRewards = 0, 
   rewardThreshold = STAMPS_PER_REWARD,
   cardsCompleted = 0,
   currentCardNumber = 1,
   lifetimeStamps = 0,
 }) {
-  const currentStamps = Number(stampCount || 0);
+  const currentStamps = typeof stampCount === 'number' ? stampCount : Number(stampCount) || 0;
   const totalSlots = Number(rewardThreshold || STAMPS_PER_REWARD);
   const filledStamps = Math.min(currentStamps, totalSlots);
   const emptyStamps = totalSlots - filledStamps;

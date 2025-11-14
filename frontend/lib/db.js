@@ -115,42 +115,57 @@ export const getCustomerSummary = async (address) => {
 export const listCustomers = async () => {
   const client = requireSupabase();
   try {
-  // Use left join instead of inner join to include customers without email records
-  const { data, error } = await client
+  // CRITICAL FIX: Query stamps table directly without join to ensure we get ALL stamp records
+  // Join customers separately if needed
+  const { data: stampsData, error: stampsError } = await client
       .from('stamps')
-      .select(
-        'customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold, customers(email)'
-      )
+      .select('customer_wallet, stamp_count, pending_rewards, reward_eligible, last_updated, lifetime_stamps, reward_threshold')
       .order('last_updated', { ascending: false })
       .limit(250);
-
-    if (error) {
-      console.error('Error fetching customers from stamps table:', error);
-      throw error;
+      
+  if (stampsError) {
+    console.error('Error fetching stamps from stamps table:', stampsError);
+    throw stampsError;
+  }
+  
+  // Get customer emails separately if stamps exist
+  let customerEmails = {};
+  if (stampsData && stampsData.length > 0) {
+    const wallets = stampsData.map(s => s.customer_wallet).filter(Boolean);
+    if (wallets.length > 0) {
+      const { data: customersData } = await client
+        .from('customers')
+        .select('wallet_address, email')
+        .in('wallet_address', wallets);
+        
+      if (customersData) {
+        customerEmails = customersData.reduce((acc, c) => {
+          if (c.wallet_address) {
+            acc[c.wallet_address.toLowerCase()] = c.email;
+          }
+          return acc;
+        }, {});
+      }
     }
+  }
+  
+  const data = stampsData;
 
-    console.log('listCustomers: Fetched stamps data:', {
-      count: data?.length || 0,
-      sample: data?.slice(0, 3).map((row) => ({
-        wallet: row.customer_wallet,
-        stampCount: row.stamp_count,
-        pendingRewards: row.pending_rewards,
-        email: row.customers?.email,
-      })),
-    });
+  const mappedData = (data?.map((row) => {
+    const walletLower = row.customer_wallet?.toLowerCase();
+    return {
+      customer_wallet: row.customer_wallet,
+      stamp_count: Number(row.stamp_count ?? 0),
+      pending_rewards: Number(row.pending_rewards ?? 0),
+      reward_eligible: Boolean(row.reward_eligible) || Number(row.pending_rewards ?? 0) > 0,
+      last_updated: row.last_updated,
+      lifetime_stamps: Number(row.lifetime_stamps ?? 0),
+      reward_threshold: Number(row.reward_threshold ?? DEFAULT_REWARD_THRESHOLD),
+      email: walletLower ? (customerEmails[walletLower] || null) : null,
+    };
+  }) || []);
 
-    return (
-      data?.map((row) => ({
-        customer_wallet: row.customer_wallet,
-        stamp_count: Number(row.stamp_count || 0),
-        pending_rewards: Number(row.pending_rewards || 0),
-        reward_eligible: Boolean(row.reward_eligible) || Number(row.pending_rewards || 0) > 0,
-        last_updated: row.last_updated,
-        lifetime_stamps: Number(row.lifetime_stamps || 0),
-        reward_threshold: Number(row.reward_threshold || DEFAULT_REWARD_THRESHOLD),
-        email: row.customers?.email || null,
-      })) || []
-    );
+  return mappedData;
   } catch (error) {
     if (!shouldUseLegacySchema(error)) {
       console.error('Error listing customers:', error);
@@ -278,33 +293,77 @@ export const recordPurchase = async ({
     // Use on-chain values if provided (most reliable), otherwise calculate from existing values
     let nextStampCount;
     let nextPendingRewards;
+    const previousStampCount = Number(existingStamp?.stamp_count || 0);
+    const previousPendingRewards = Number(existingStamp?.pending_rewards || 0);
+    const stampsToAdd = Number(stampsAwarded || 1);
     
     if (stampCount !== undefined && stampCount !== null && pendingRewards !== undefined && pendingRewards !== null) {
       // Use on-chain values directly (most accurate)
       // Handle both string and number inputs (from API)
-      nextStampCount = typeof stampCount === 'string' ? Number(stampCount) : Number(stampCount);
-      nextPendingRewards = typeof pendingRewards === 'string' ? Number(pendingRewards) : Number(pendingRewards);
+      const onChainStampCount = typeof stampCount === 'string' ? Number(stampCount) : Number(stampCount);
+      const onChainPendingRewards = typeof pendingRewards === 'string' ? Number(pendingRewards) : Number(pendingRewards);
       
       // Ensure we have valid numbers
-      if (isNaN(nextStampCount)) nextStampCount = 0;
-      if (isNaN(nextPendingRewards)) nextPendingRewards = 0;
+      const validStampCount = isNaN(onChainStampCount) ? 0 : onChainStampCount;
+      const validPendingRewards = isNaN(onChainPendingRewards) ? 0 : onChainPendingRewards;
       
-      console.log('Using on-chain values for stamp update:', {
-        wallet,
-        onChainStampCount: nextStampCount,
-        onChainPendingRewards: nextPendingRewards,
-        previousStampCount: existingStamp?.stamp_count || 0,
-        previousPendingRewards: existingStamp?.pending_rewards || 0,
-        stampsAwarded,
-        rawStampCount: stampCount,
-        rawPendingRewards: pendingRewards,
-      });
+      // CRITICAL FIX: If on-chain stamp count hasn't increased after awarding stamps, it means the on-chain state 
+      // hasn't updated yet. Fall back to calculating from database values to ensure stamps are added.
+      // Use on-chain values if:
+      // 1. Stamp count increased (transaction processed)
+      // 2. No stamps were awarded (redemption or other operation)
+      // 3. Previous count was 0 AND on-chain shows > 0 (new customer case)
+      const stampCountIncreased = validStampCount > previousStampCount;
+      const noStampsAwarded = stampsToAdd === 0;
+      const newCustomerWithStamps = previousStampCount === 0 && validStampCount > 0;
+      
+      const shouldUseOnChain = stampCountIncreased || noStampsAwarded || newCustomerWithStamps;
+      
+      if (shouldUseOnChain) {
+        // Use on-chain values - they're valid
+        nextStampCount = validStampCount;
+        nextPendingRewards = validPendingRewards;
+        
+        console.log('Using on-chain values for stamp update:', {
+          wallet,
+          onChainStampCount: validStampCount,
+          onChainPendingRewards: validPendingRewards,
+          previousStampCount,
+          previousPendingRewards,
+          stampsAwarded,
+          shouldUseOnChain,
+        });
+      } else {
+        // On-chain values appear stale (0 when they should be > previous)
+        // Calculate from database values instead to ensure stamps are added
+        console.warn('On-chain stamp count appears stale (0 after awarding stamps). Calculating from database values:', {
+          wallet,
+          onChainStampCount: validStampCount,
+          previousStampCount,
+          stampsAwarded,
+        });
+        
+        nextStampCount = previousStampCount + stampsToAdd;
+        nextPendingRewards = previousPendingRewards;
+        
+        // Handle reward threshold overflow
+        while (nextStampCount >= threshold) {
+          nextStampCount -= threshold;
+          nextPendingRewards += 1;
+        }
+        
+        console.log('Calculated stamp values from database (fallback):', {
+          wallet,
+          previousStampCount,
+          stampsToAdd,
+          nextStampCount,
+          previousPendingRewards,
+          nextPendingRewards,
+          threshold,
+        });
+      }
     } else {
-      // Fallback: calculate from existing database values
-      const previousStampCount = Number(existingStamp?.stamp_count || 0);
-      const previousPendingRewards = Number(existingStamp?.pending_rewards || 0);
-      const stampsToAdd = Number(stampsAwarded || 1);
-      
+      // Fallback: calculate from existing database values (on-chain values not provided)
       nextStampCount = previousStampCount + stampsToAdd;
       nextPendingRewards = previousPendingRewards;
       
@@ -852,4 +911,33 @@ export const createOutlet = async ({
   }
 
   return { lastInsertRowid: data?.id || null };
+};
+
+export const listProducts = async () => {
+  const client = requireSupabase();
+  try {
+    const { data, error } = await client
+      .from('products')
+      .select('id, name, description, price, image')
+      .order('price', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching products from database:', error);
+      throw error;
+    }
+
+    // Transform price from numeric to string format for compatibility
+    return (
+      data?.map((product) => ({
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        price: product.price?.toString() || '0.00',
+        image: product.image,
+      })) || []
+    );
+  } catch (error) {
+    console.error('Error listing products:', error);
+    throw error;
+  }
 };

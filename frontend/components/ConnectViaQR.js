@@ -4,7 +4,6 @@ import QRCode from 'qrcode';
 import { toast } from 'react-toastify';
 import { ethers } from 'ethers';
 import { useWallet } from '../context/WalletContext';
-import { COFFEE_MENU } from '../constants/products';
 import { MERCHANT_WALLET_ADDRESS, LOYALTY_CONTRACT_ADDRESS } from '../lib/constants';
 import {
   buyCoffee,
@@ -37,15 +36,43 @@ export default function ConnectViaQR() {
     isCorrectNetwork,
     ensureCorrectNetwork,
   } = useWallet();
-  const [selectedProductId, setSelectedProductId] = useState(COFFEE_MENU[0]?.id || null);
+  const [coffeeMenu, setCoffeeMenu] = useState([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [selectedProductId, setSelectedProductId] = useState(null);
   const [customAmount, setCustomAmount] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPaying, setIsPaying] = useState(false);
 
+  // Fetch products from database
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        setIsLoadingProducts(true);
+        const response = await fetch('/api/products');
+        if (!response.ok) {
+          throw new Error('Failed to fetch products');
+        }
+        const data = await response.json();
+        setCoffeeMenu(data.products || []);
+        // Set default selected product after loading
+        if (data.products && data.products.length > 0) {
+          setSelectedProductId((prev) => prev || data.products[0]?.id || null);
+        }
+      } catch (error) {
+        console.error('Error fetching products:', error);
+        toast.error('Failed to load coffee menu');
+      } finally {
+        setIsLoadingProducts(false);
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
   const selectedProduct = useMemo(
-    () => COFFEE_MENU.find((item) => item.id === selectedProductId) || null,
-    [selectedProductId]
+    () => coffeeMenu.find((item) => item.id === selectedProductId) || null,
+    [coffeeMenu, selectedProductId]
   );
 
   const amountToUse = selectedProduct ? selectedProduct.price : customAmount || '0';
@@ -352,7 +379,7 @@ export default function ConnectViaQR() {
       </div>
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {COFFEE_MENU.map((product) => {
+        {coffeeMenu.map((product) => {
           const isActive = selectedProductId === product.id;
           return (
             <button
@@ -362,18 +389,32 @@ export default function ConnectViaQR() {
                 setSelectedProductId(product.id);
                 setCustomAmount('');
               }}
-              className={`flex h-full flex-col rounded-3xl border px-5 py-4 text-left transition shadow-lg shadow-slate-900/20 ${
+              className={`group flex h-full flex-col overflow-hidden rounded-3xl border text-left transition shadow-lg shadow-slate-900/20 ${
                 isActive
                   ? 'border-emerald-400/60 bg-emerald-400/10'
                   : 'border-white/10 bg-white/[0.03] hover:border-emerald-300/40 hover:bg-emerald-300/5'
               }`}
             >
-              <span className="text-xs uppercase tracking-[0.4em] text-white/40">Coffee</span>
-              <span className="mt-2 text-lg font-semibold text-white">{product.name}</span>
-              <p className="mt-2 text-xs text-slate-300">{product.description}</p>
-              <span className="mt-4 text-sm font-semibold text-emerald-200">
-                {product.price} {TOKEN_SYMBOL}
-              </span>
+              {/* Product Image */}
+              <div className="relative h-40 w-full overflow-hidden">
+                <img
+                  src={product.image}
+                  alt={product.name}
+                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                  onError={(e) => {
+                    e.target.src = 'https://via.placeholder.com/400x400/1e293b/64748b?text=' + encodeURIComponent(product.name);
+                  }}
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/0 to-transparent" />
+              </div>
+              <div className="flex flex-1 flex-col px-5 py-4">
+                <span className="text-xs uppercase tracking-[0.4em] text-white/40">Coffee</span>
+                <span className="mt-2 text-lg font-semibold text-white">{product.name}</span>
+                <p className="mt-2 text-xs text-slate-300">{product.description}</p>
+                <span className="mt-4 text-sm font-semibold text-emerald-200">
+                  {product.price} {TOKEN_SYMBOL}
+                </span>
+              </div>
             </button>
           );
         })}

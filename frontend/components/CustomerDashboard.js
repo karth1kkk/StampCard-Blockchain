@@ -15,7 +15,6 @@ import {
   getEventHistory,
   getLoyaltyContract,
 } from '../lib/web3';
-import { COFFEE_MENU } from '../constants/products';
 import { BREW_TOKEN_SYMBOL, STAMPS_PER_REWARD } from '../lib/constants';
 
 const formatEther = (value) => {
@@ -75,7 +74,32 @@ export default function CustomerDashboard() {
 
   const isWalletConnected = Boolean(customerAddress);
 
-  const sortedMenu = useMemo(() => COFFEE_MENU, []);
+  const [coffeeMenu, setCoffeeMenu] = useState([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+
+  const sortedMenu = useMemo(() => coffeeMenu, [coffeeMenu]);
+
+  // Fetch products from database
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        setIsLoadingProducts(true);
+        const response = await fetch('/api/products');
+        if (!response.ok) {
+          throw new Error('Failed to fetch products');
+        }
+        const data = await response.json();
+        setCoffeeMenu(data.products || []);
+      } catch (error) {
+        console.error('Error fetching products:', error);
+        toast.error('Failed to load coffee menu');
+      } finally {
+        setIsLoadingProducts(false);
+      }
+    };
+
+    fetchProducts();
+  }, []);
 
   useEffect(() => {
     if (!provider) {
@@ -141,7 +165,16 @@ export default function CustomerDashboard() {
 
   useEffect(() => {
     refreshOnChainData();
-  }, [refreshOnChainData]);
+    
+    // Set up polling to refresh stamp count every 5 seconds when wallet is connected
+    if (customerAddress && provider) {
+      const interval = setInterval(() => {
+        refreshOnChainData();
+      }, 5000); // Refresh every 5 seconds
+      
+      return () => clearInterval(interval);
+    }
+  }, [refreshOnChainData, customerAddress, provider]);
 
   useEffect(() => {
     if (!isCheckoutVisible || !checkoutProduct) {
@@ -263,6 +296,7 @@ export default function CustomerDashboard() {
       const { hash, receipt } = await buyCoffee({ customerAddress, priceWei }, customerSigner);
       toast.success(`Purchased ${product.name}. Tx: ${hash.slice(0, 10)}…`);
 
+      // Sync to database first
       await fetch('/api/stamps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,7 +313,17 @@ export default function CustomerDashboard() {
         console.error('Failed to sync purchase to Supabase', error);
       });
 
+      // Wait a moment for on-chain state to update, then refresh
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      
+      // Refresh on-chain data (stamp count, etc.)
       await refreshOnChainData();
+      
+      // Refresh again after a longer delay to ensure we get the updated state
+      setTimeout(() => {
+        refreshOnChainData();
+      }, 3000);
+      
       closeCheckout();
     } catch (error) {
       console.error('Coffee purchase failed:', error);
@@ -427,21 +471,35 @@ export default function CustomerDashboard() {
             {sortedMenu.map((product) => (
               <div
                 key={product.id}
-                className="flex h-full flex-col rounded-3xl border border-white/10 bg-black/30 p-5 text-left shadow-lg shadow-slate-900/30"
+                className="group flex h-full flex-col overflow-hidden rounded-3xl border border-white/10 bg-black/30 text-left shadow-lg shadow-slate-900/30 transition hover:border-emerald-300/60 hover:shadow-xl hover:shadow-emerald-500/20"
               >
-                <span className="text-xs uppercase tracking-[0.4em] text-white/40">Coffee</span>
-                <span className="mt-2 text-lg font-semibold text-white">{product.name}</span>
-                <p className="mt-2 text-xs text-slate-300">{product.description}</p>
-                <span className="mt-4 text-sm font-semibold text-emerald-200">
-                  {product.price} {BREW_TOKEN_SYMBOL}
-                </span>
-                <button
-                  onClick={() => openCheckout(product)}
-                  disabled={isPurchasing}
-                  className="mt-4 inline-flex items-center justify-center rounded-full bg-gradient-to-r from-emerald-300 via-lime-300 to-sky-300 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-slate-900 shadow-lg shadow-emerald-300/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isPurchasing ? 'Processing…' : 'Buy with MetaMask'}
-                </button>
+                {/* Product Image */}
+                <div className="relative h-48 w-full overflow-hidden">
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110"
+                    onError={(e) => {
+                      e.target.src = 'https://via.placeholder.com/400x400/1e293b/64748b?text=' + encodeURIComponent(product.name);
+                    }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                </div>
+                <div className="flex flex-1 flex-col p-5">
+                  <span className="text-xs uppercase tracking-[0.4em] text-white/40">Coffee</span>
+                  <span className="mt-2 text-lg font-semibold text-white">{product.name}</span>
+                  <p className="mt-2 text-xs text-slate-300">{product.description}</p>
+                  <span className="mt-4 text-sm font-semibold text-emerald-200">
+                    {product.price} {BREW_TOKEN_SYMBOL}
+                  </span>
+                  <button
+                    onClick={() => openCheckout(product)}
+                    disabled={isPurchasing}
+                    className="mt-4 inline-flex items-center justify-center rounded-full bg-gradient-to-r from-emerald-300 via-lime-300 to-sky-300 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-slate-900 shadow-lg shadow-emerald-300/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isPurchasing ? 'Processing…' : 'Buy with MetaMask'}
+                  </button>
+                </div>
               </div>
             ))}
           </div>
