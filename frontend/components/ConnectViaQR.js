@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import Image from 'next/image';
 import QRCode from 'qrcode';
 import { toast } from 'react-toastify';
+import { ethers } from 'ethers';
 import { useWallet } from '../context/WalletContext';
 import { COFFEE_MENU } from '../constants/products';
 import { MERCHANT_WALLET_ADDRESS, LOYALTY_CONTRACT_ADDRESS } from '../lib/constants';
+import {
+  buyCoffee,
+  approveTokenSpending,
+  getTokenAllowance,
+  getLoyaltyContract,
+} from '../lib/web3';
 
 const TOKEN_ADDRESS = process.env.NEXT_PUBLIC_TOKEN_ADDRESS || '';
 const TOKEN_SYMBOL = 'BWT';
@@ -21,11 +28,20 @@ const buildPayload = ({ merchantAddress, chainId, amount, product }) => ({
 });
 
 export default function ConnectViaQR() {
-  const { merchantAddress, expectedChainId } = useWallet();
+  const {
+    merchantAddress,
+    expectedChainId,
+    customerAddress,
+    customerSigner,
+    provider,
+    isCorrectNetwork,
+    ensureCorrectNetwork,
+  } = useWallet();
   const [selectedProductId, setSelectedProductId] = useState(COFFEE_MENU[0]?.id || null);
   const [customAmount, setCustomAmount] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isPaying, setIsPaying] = useState(false);
 
   const selectedProduct = useMemo(
     () => COFFEE_MENU.find((item) => item.id === selectedProductId) || null,
@@ -106,6 +122,131 @@ export default function ConnectViaQR() {
     }
   };
 
+  const ensureAllowance = useCallback(
+    async (amountWei) => {
+      if (!customerAddress || !provider || !customerSigner) {
+        throw new Error('Connect your wallet first.');
+      }
+      const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
+      if (!LOYALTY_ADDRESS) {
+        throw new Error('Loyalty contract address not configured.');
+      }
+      const allowance = await getTokenAllowance(customerAddress, LOYALTY_ADDRESS, provider);
+      if (allowance >= amountWei) {
+        return;
+      }
+      const approvalAmount = amountWei * 5n;
+      await approveTokenSpending(LOYALTY_ADDRESS, approvalAmount, customerSigner);
+      toast.success('Allowance approved for BrewToken spending.');
+    },
+    [customerAddress, provider, customerSigner]
+  );
+
+  const extractRpcError = (error) => {
+    if (!error) {
+      return 'Transaction failed';
+    }
+    const knownSources = [
+      error.shortMessage,
+      error.message,
+      error?.info?.error?.message,
+      error?.error?.message,
+      error?.data?.message,
+      error?.error?.data?.message,
+      error?.reason,
+    ].filter(Boolean);
+    if (knownSources.length > 0) {
+      return knownSources[0];
+    }
+    return 'Transaction failed';
+  };
+
+  const handlePayWithWallet = useCallback(async () => {
+    if (!selectedProduct && !customAmount) {
+      toast.error('Select a product or enter a custom amount.');
+      return;
+    }
+    if (!customerAddress || !customerSigner) {
+      toast.error('Connect your wallet before paying.');
+      return;
+    }
+    if (!isCorrectNetwork) {
+      try {
+        await ensureCorrectNetwork();
+      } catch (error) {
+        toast.error(error?.message || 'Network switch rejected.');
+        return;
+      }
+    }
+
+    const amountToPay = selectedProduct ? selectedProduct.price : customAmount;
+    if (!amountToPay || Number(amountToPay) <= 0) {
+      toast.error('Please select a product or enter a valid amount.');
+      return;
+    }
+
+    const priceWei = ethers.parseUnits(amountToPay.toString(), 18);
+
+    try {
+      setIsPaying(true);
+      await ensureAllowance(priceWei);
+
+      const contract = getLoyaltyContract(customerSigner);
+      try {
+        await contract.buyCoffee.staticCall(customerAddress, priceWei);
+      } catch (staticError) {
+        const reason = extractRpcError(staticError);
+        toast.error(reason || 'Purchase simulation failed. Check your balance and allowance.');
+        setIsPaying(false);
+        return;
+      }
+
+      const { hash, receipt } = await buyCoffee({ customerAddress, priceWei }, customerSigner);
+      const productName = selectedProduct ? selectedProduct.name : 'Custom Amount';
+      toast.success(`Purchased ${productName}. Tx: ${hash.slice(0, 10)}…`);
+
+      await fetch('/api/stamps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: customerAddress,
+          productId: selectedProduct?.id,
+          productName: selectedProduct?.name || 'Custom Amount',
+          priceBWT: amountToPay,
+          txHash: hash,
+          blockNumber: receipt?.blockNumber || null,
+          metadata: selectedProduct
+            ? { description: selectedProduct.description }
+            : { customAmount: amountToPay },
+        }),
+      }).catch((error) => {
+        console.error('Failed to sync purchase to Supabase', error);
+      });
+    } catch (error) {
+      console.error('Payment failed:', error);
+      const friendlyMessage = extractRpcError(error);
+      if (friendlyMessage.includes("doesn't have enough funds")) {
+        toast.error('Your wallet needs ETH on this network to cover gas.');
+      } else if (friendlyMessage.includes('ERC20InsufficientBalance')) {
+        toast.error(`You do not have enough ${TOKEN_SYMBOL} to cover this purchase.`);
+      } else if (friendlyMessage.includes('ERC20: transfer amount exceeds allowance')) {
+        toast.error('Increase your BrewToken allowance for the loyalty contract and try again.');
+      } else {
+        toast.error(friendlyMessage);
+      }
+    } finally {
+      setIsPaying(false);
+    }
+  }, [
+    selectedProduct,
+    customAmount,
+    customerAddress,
+    customerSigner,
+    isCorrectNetwork,
+    ensureCorrectNetwork,
+    ensureAllowance,
+  ]);
+
   if (!merchantAddress) {
     return null;
   }
@@ -114,10 +255,10 @@ export default function ConnectViaQR() {
     <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 shadow-2xl shadow-indigo-900/40 backdrop-blur-2xl sm:p-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h3 className="text-2xl font-semibold text-white">Coffee Menu QR</h3>
+          <h3 className="text-2xl font-semibold text-white">Coffee Menu QR & Payment</h3>
           <p className="mt-2 text-sm text-slate-300">
-            Pick a drink to generate a QR code. Customers scan it with MetaMask Mobile to pay in {TOKEN_SYMBOL}{' '}
-            tokens and automatically receive their stamp during checkout.
+            Pick a drink to generate a QR code. Customers can scan it with MetaMask Mobile or pay directly with their
+            connected wallet. Both methods automatically add stamps during checkout.
           </p>
         </div>
         <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:gap-3">
@@ -142,6 +283,27 @@ export default function ConnectViaQR() {
           </button>
         </div>
       </div>
+
+      {/* Payment with Wallet Button */}
+      {customerAddress && payload && (
+        <div className="mt-6">
+          <button
+            onClick={handlePayWithWallet}
+            disabled={isPaying || !amountToUse || Number(amountToUse) <= 0}
+            className="w-full rounded-full bg-gradient-to-r from-emerald-400 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-900 shadow-lg shadow-emerald-300/40 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+            type="button"
+          >
+            {isPaying ? 'Processing…' : 'Pay with Connected Wallet'}
+          </button>
+        </div>
+      )}
+      {!customerAddress && payload && (
+        <div className="mt-6">
+          <p className="text-center text-xs text-slate-400 py-2">
+            Connect your wallet to pay directly
+          </p>
+        </div>
+      )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[0.45fr_0.55fr]">
         <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-black/30 p-6 shadow-inner shadow-blue-900/30">

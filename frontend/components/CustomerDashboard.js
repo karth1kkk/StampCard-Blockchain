@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import Link from 'next/link';
 import { toast } from 'react-toastify';
 import { ethers } from 'ethers';
 import QRCode from 'qrcode';
@@ -417,20 +416,12 @@ export default function CustomerDashboard() {
         )}
 
         <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 shadow-2xl shadow-indigo-900/30 backdrop-blur-2xl">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-emerald-200">Menu</p>
-              <h3 className="text-2xl font-semibold text-white">Buy Coffee with BrewToken</h3>
-              <p className="mt-2 text-sm text-slate-300">
-                Each purchase adds one stamp automatically. Collect {rewardThreshold} stamps to unlock a free drink.
-              </p>
-            </div>
-            <Link
-              href="/customer/scan"
-              className="rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/40 hover:text-white"
-            >
-              Scan Merchant QR
-            </Link>
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-emerald-200">Menu</p>
+            <h3 className="text-2xl font-semibold text-white">Buy Coffee with BrewToken</h3>
+            <p className="mt-2 text-sm text-slate-300">
+              Each purchase adds one stamp automatically. Collect {rewardThreshold} stamps to unlock a free drink.
+            </p>
           </div>
           <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {sortedMenu.map((product) => (

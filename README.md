@@ -146,9 +146,8 @@ Additional options:
 ### Customer Journey
 1. Connect MetaMask via the top-right button.
 2. Browse the coffee grid, tap **Buy with MetaMask** on any item.
-3. Confirm the BrewToken transfer; once mined, you’ll see a toast and your stamp count updates.
+3. Confirm the BrewToken transfer; once mined, you'll see a toast and your stamp count updates.
 4. At 8 stamps, the dashboard highlights your free drink.
-5. Alternatively, open **Scan & Pay** on a phone, scan the merchant’s QR, and approve the transfer.
 
 ### Merchant / Owner Journey
 1. Connect the deployer wallet on `/merchant`.
@@ -180,17 +179,91 @@ The History tab aggregates purchases and reward redemptions from Supabase (walle
 
 ```
 StampCard-Blockchain/
-├── hardhat/                  # Solidity contracts, tests, deployment scripts
-├── frontend/                 # Next.js application
-│   ├── components/           # React UI components
-│   ├── constants/            # Generated ABI + coffee menu data
-│   ├── lib/                  # web3 + Supabase helpers
-│   ├── pages/                # Next.js routes & API endpoints
-│   └── supabase-schema.sql   # Database schema
-├── scripts/                  # Node utilities (ABI & env sync)
-├── deployment.json           # Last deployment metadata
-└── README.md
+├── hardhat/                              # Smart contracts development
+│   ├── contracts/                        # Solidity smart contracts
+│   │   ├── BrewToken.sol                # ERC-20 token contract (BWT)
+│   │   └── CoffeeLoyalty.sol            # Main loyalty program contract
+│   ├── scripts/                          # Deployment & utility scripts
+│   │   ├── deploy.js                     # Basic deployment script
+│   │   ├── deploy-and-save.js           # Deployment with env sync
+│   │   └── check-token.js               # Token inspection utility
+│   ├── test/                             # Smart contract tests
+│   │   └── CoffeeLoyalty.test.js        # Loyalty contract unit tests
+│   ├── hardhat.config.js                # Hardhat configuration
+│   ├── package.json                      # Hardhat dependencies
+│   └── artifacts/                        # Compiled contract artifacts (gitignored)
+│   └── cache/                            # Hardhat cache (gitignored)
+│
+├── frontend/                              # Next.js application
+│   ├── components/                       # React UI components
+│   │   ├── CustomerDashboard.js         # Customer-facing dashboard
+│   │   ├── MerchantDashboard.js         # Merchant/owner dashboard
+│   │   ├── WalletConnect.js             # Wallet connection component
+│   │   ├── TransactionHistory.js        # Transaction history display
+│   │   ├── ConnectViaQR.js              # QR code generation component (for merchants)
+│   │   └── pos/                          # Point-of-sale components
+│   │       ├── POSDashboard.js          # POS main interface
+│   │       ├── LoginPage.js             # Merchant authentication
+│   │       ├── CustomerList.js          # Customer management
+│   │       └── QRModal.js               # QR code generation modal
+│   ├── pages/                            # Next.js routes & API endpoints
+│   │   ├── _app.js                       # App wrapper with providers
+│   │   ├── index.js                      # POS home page
+│   │   ├── merchant/
+│   │   │   ├── index.js                 # Merchant dashboard route
+│   │   │   └── register.js              # Merchant registration
+│   │   ├── pos/
+│   │   │   └── index.js                 # POS dashboard route
+│   │   └── api/                          # API routes
+│   │       ├── stamps.js                # Stamp operations
+│   │       ├── customers.js             # Customer data API
+│   │       ├── transactions.js          # Transaction history API
+│   │       ├── outlets.js               # Outlet management API
+│   │       ├── merchant/
+│   │       │   ├── challenge.js         # Authentication challenge
+│   │       │   └── register.js          # Merchant registration API
+│   │       └── rewards/
+│   │           └── notify.js            # Reward notification API
+│   ├── lib/                              # Utility libraries
+│   │   ├── web3.js                       # Web3 provider setup
+│   │   ├── constants.js                 # App-wide constants
+│   │   ├── contractABI.js               # Contract ABI helpers
+│   │   ├── db.js                        # Database utilities
+│   │   ├── supabaseBrowser.js           # Client-side Supabase client
+│   │   └── supabaseServer.js            # Server-side Supabase client
+│   ├── context/                          # React context providers
+│   │   └── WalletContext.js             # Wallet state management
+│   ├── hooks/                            # Custom React hooks
+│   │   └── useInactivityTimer.js        # Session timeout hook
+│   ├── constants/                        # Static data & ABIs
+│   │   ├── brewtoken.json               # BrewToken ABI
+│   │   ├── coffeeloyalty.json           # CoffeeLoyalty ABI
+│   │   └── products.js                  # Coffee product catalog
+│   ├── styles/                           # Global styles
+│   │   └── globals.css                  # Global CSS styles
+│   ├── public/                           # Static assets
+│   │   └── favicon.ico                  # Site favicon
+│   ├── supabase-schema.sql              # Database schema
+│   ├── next.config.js                   # Next.js configuration
+│   ├── tailwind.config.js               # Tailwind CSS configuration
+│   ├── postcss.config.js                # PostCSS configuration
+│   └── package.json                     # Frontend dependencies
+│
+├── scripts/                               # Root-level utility scripts
+│   ├── sync-abi.js                       # Sync contract ABIs to frontend
+│   ├── syncDeployment.js                 # Sync deployment info to env
+│   └── dev-tools/                        # Development utilities
+│       ├── generate-wallets.js           # Generate test wallets
+│       └── fund-wallets.js               # Fund test wallets with tokens
+│
+├── package.json                          # Root package.json with workspace scripts
+└── README.md                             # Project documentation
 ```
+
+**Note:** The following files/directories are gitignored:
+- `node_modules/`, `hardhat/cache/`, `hardhat/artifacts/`, `frontend/.next/`, `frontend/node_modules/`
+- `.env` and `.env.local` (contains sensitive configuration)
+- `deployment.json` and `bulk-wallets.json` (auto-generated files)
 
 ## 📦 Commands
 

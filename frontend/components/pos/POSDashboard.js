@@ -5,7 +5,10 @@ import { toast } from 'react-toastify';
 import { AnimatePresence, motion } from 'framer-motion';
 import { COFFEE_MENU } from '../../constants/products';
 import QRModal from './QRModal';
+import ReceiptModal from './ReceiptModal';
+import FundPoolModal from './FundPoolModal';
 import CustomerList from './CustomerList';
+import PurchaseHistory from './PurchaseHistory';
 import { BREW_TOKEN_ABI } from '../../lib/contractABI';
 import {
   BREW_TOKEN_SYMBOL,
@@ -19,6 +22,11 @@ import {
   getStampCount,
   recordStampOnChain,
   fundRewardsOnChain,
+  buyCoffee,
+  approveTokenSpending,
+  getTokenAllowance,
+  getLoyaltyContract,
+  getTokenBalance,
 } from '../../lib/web3';
 import { useInactivityTimer } from '../../hooks/useInactivityTimer';
 
@@ -53,6 +61,7 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
     customerAddress,
     connectCustomerWallet,
     disconnectCustomerWallet,
+    merchantAddress,
   } = useWallet();
   const [quantities, setQuantities] = useState({});
   const [customerWallet, setCustomerWallet] = useState('');
@@ -68,11 +77,16 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
   const [sessionTimedOut, setSessionTimedOut] = useState(false);
   const [orderHistoryRefreshToken, setOrderHistoryRefreshToken] = useState(0);
   const [isCustomerPanelOpen, setIsCustomerPanelOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('history'); // 'history' or 'customers'
   const [now, setNow] = useState(() => new Date());
   const [isFunding, setIsFunding] = useState(false);
   const [detectedTxHash, setDetectedTxHash] = useState('');
   const paymentWatcherRef = useRef(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isPaying, setIsPaying] = useState(false);
+  const [receiptData, setReceiptData] = useState(null);
+  const [isReceiptVisible, setIsReceiptVisible] = useState(false);
+  const [isFundPoolModalOpen, setIsFundPoolModalOpen] = useState(false);
 
   const handleConnectMerchant = useCallback(async () => {
     try {
@@ -188,6 +202,313 @@ const merchantContractAddress = useMemo(() => {
     sanitizedCustomerWallet &&
     ethers.isAddress(sanitizedCustomerWallet);
 
+  const canPayWithWallet =
+    orderSummary.totalWei > 0n &&
+    customerAddress &&
+    ethers.isAddress(customerAddress);
+
+  const extractRpcError = useCallback((error) => {
+    if (!error) {
+      return 'Transaction failed';
+    }
+    const knownSources = [
+      error.shortMessage,
+      error.message,
+      error?.info?.error?.message,
+      error?.error?.message,
+      error?.data?.message,
+      error?.error?.data?.message,
+      error?.reason,
+    ].filter(Boolean);
+    if (knownSources.length > 0) {
+      return knownSources[0];
+    }
+    return 'Transaction failed';
+  }, []);
+
+  const ensureAllowance = useCallback(
+    async (amountWei, payerAddress, payerSigner) => {
+      if (!payerAddress || !provider || !payerSigner) {
+        throw new Error('Connect your wallet first.');
+      }
+      const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
+      if (!LOYALTY_ADDRESS) {
+        throw new Error('Loyalty contract address not configured.');
+      }
+      const allowance = await getTokenAllowance(payerAddress, LOYALTY_ADDRESS, provider);
+      if (allowance >= amountWei) {
+        return;
+      }
+      const approvalAmount = amountWei * 5n;
+      await approveTokenSpending(LOYALTY_ADDRESS, approvalAmount, payerSigner);
+      toast.success('Allowance approved for BrewToken spending.');
+    },
+    [provider]
+  );
+
+  const handlePayWithWallet = useCallback(async () => {
+    if (!canPayWithWallet) {
+      toast.error('Select at least one item and connect your wallet to pay.');
+      return;
+    }
+    if (!customerAddress || !customerSigner) {
+      toast.error('Connect your wallet before paying.');
+      return;
+    }
+
+    // Verify the signer address matches the customer address (required by buyCoffee contract)
+    const signerAddress = await customerSigner.getAddress();
+    if (signerAddress.toLowerCase() !== customerAddress.toLowerCase()) {
+      toast.error('Connected wallet address does not match. Please reconnect your wallet.');
+      return;
+    }
+
+    if (!isCorrectNetwork) {
+      try {
+        await ensureCorrectNetwork();
+      } catch (error) {
+        toast.error(error?.message || 'Network switch rejected.');
+        return;
+      }
+    }
+
+    const priceWei = orderSummary.totalWei;
+    const customerWalletToUse = customerAddress;
+    let tokenBalance = 0n;
+
+    try {
+      setIsPaying(true);
+
+      // Check token balance first
+      tokenBalance = await getTokenBalance(customerWalletToUse, provider);
+      if (tokenBalance < priceWei) {
+        const balanceFormatted = ethers.formatUnits(tokenBalance, 18);
+        const priceFormatted = ethers.formatUnits(priceWei, 18);
+        toast.error(
+          `Insufficient balance. You have ${balanceFormatted} ${BREW_TOKEN_SYMBOL}, but need ${priceFormatted} ${BREW_TOKEN_SYMBOL}.`
+        );
+        setIsPaying(false);
+        return;
+      }
+
+      // Check and approve allowance
+      await ensureAllowance(priceWei, customerWalletToUse, customerSigner);
+
+      // Verify allowance was set correctly (double-check)
+      const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
+      if (!LOYALTY_ADDRESS) {
+        throw new Error('Loyalty contract address not configured.');
+      }
+      const finalAllowance = await getTokenAllowance(customerWalletToUse, LOYALTY_ADDRESS, provider);
+      if (finalAllowance < priceWei) {
+        toast.error(
+          `Allowance insufficient. Expected at least ${ethers.formatUnits(priceWei, 18)} ${BREW_TOKEN_SYMBOL}, but got ${ethers.formatUnits(finalAllowance, 18)} ${BREW_TOKEN_SYMBOL}. Please try again.`
+        );
+        setIsPaying(false);
+        return;
+      }
+
+      // Verify balance again (in case something changed)
+      const finalBalance = await getTokenBalance(customerWalletToUse, provider);
+      if (finalBalance < priceWei) {
+        toast.error(
+          `Balance insufficient. Expected at least ${ethers.formatUnits(priceWei, 18)} ${BREW_TOKEN_SYMBOL}, but you have ${ethers.formatUnits(finalBalance, 18)} ${BREW_TOKEN_SYMBOL}.`
+        );
+        setIsPaying(false);
+        return;
+      }
+
+      // Execute the purchase transaction
+      console.log('Executing buyCoffee transaction:', {
+        customerAddress: customerWalletToUse,
+        priceWei: priceWei.toString(),
+        priceBWT: ethers.formatUnits(priceWei, 18),
+        balance: ethers.formatUnits(finalBalance, 18),
+        allowance: ethers.formatUnits(finalAllowance, 18),
+      });
+      
+      const { hash, receipt } = await buyCoffee(
+        { customerAddress: customerWalletToUse, priceWei },
+        customerSigner
+      );
+      toast.success(`Payment sent. Tx: ${hash.slice(0, 10)}…`);
+
+      // Update customer wallet field with the connected wallet
+      setCustomerWallet(customerWalletToUse);
+      setCustomerWalletSynced(true);
+
+      // Note: buyCoffee automatically increments stamps on-chain (no need to call recordStampOnChain)
+      // Fetch the on-chain stamp count and pending rewards to sync with database
+      try {
+        setProcessingStamp(true);
+        const [stampCount, pendingRewards] = await Promise.all([
+          getStampCount(customerWalletToUse, customerSigner.provider),
+          getPendingRewards(customerWalletToUse, customerSigner.provider),
+        ]);
+
+        // Sync to Supabase with on-chain values
+        await fetch('/api/stamps', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token || ''}`,
+          },
+          body: JSON.stringify({
+            address: customerWalletToUse,
+            email: customerEmail.trim() || null,
+            totalBWT: orderSummary.totalBwt,
+            items: orderItems,
+            txHash: hash,
+            blockNumber: receipt?.blockNumber || null,
+            rewardThreshold: STAMPS_PER_REWARD,
+            stampsAwarded: 1, // buyCoffee automatically adds 1 stamp
+            pendingRewards, // Use on-chain value
+            stampCount, // Use on-chain value
+            merchantEmail: session?.user?.email || null,
+            status: 'PAID',
+            metadata: { source: 'pos-dashboard', paymentMethod: 'connected-wallet' },
+          }),
+        });
+
+        // Show receipt
+        setReceiptData({
+          items: orderItems,
+          totalBWT: orderSummary.totalBwt,
+          customerWallet: customerWalletToUse,
+          customerEmail: customerEmail.trim() || null,
+          merchantEmail: session?.user?.email || null,
+          txHash: hash,
+          blockNumber: receipt?.blockNumber || null,
+          timestamp: new Date().toISOString(),
+          paymentMethod: 'connected-wallet',
+          stampsAwarded: 1,
+          stampCount,
+          pendingRewards,
+        });
+        setIsReceiptVisible(true);
+
+        toast.success('Payment and stamp recorded successfully.');
+        setOrderHistoryRefreshToken((token) => token + 1);
+        resetOrder();
+      } catch (syncError) {
+        console.error('Syncing purchase to database failed:', syncError);
+        toast.error('Payment successful, but database sync failed. The stamp was recorded on-chain.');
+        // Show receipt even if database sync failed
+        try {
+          const [stampCount, pendingRewards] = await Promise.all([
+            getStampCount(customerWalletToUse, customerSigner.provider),
+            getPendingRewards(customerWalletToUse, customerSigner.provider),
+          ]);
+          setReceiptData({
+            items: orderItems,
+            totalBWT: orderSummary.totalBwt,
+            customerWallet: customerWalletToUse,
+            customerEmail: customerEmail.trim() || null,
+            merchantEmail: session?.user?.email || null,
+            txHash: hash,
+            blockNumber: receipt?.blockNumber || null,
+            timestamp: new Date().toISOString(),
+            paymentMethod: 'connected-wallet',
+            stampsAwarded: 1,
+            stampCount,
+            pendingRewards,
+          });
+        } catch (fetchError) {
+          console.error('Failed to fetch on-chain stamp data:', fetchError);
+          setReceiptData({
+            items: orderItems,
+            totalBWT: orderSummary.totalBwt,
+            customerWallet: customerWalletToUse,
+            customerEmail: customerEmail.trim() || null,
+            merchantEmail: session?.user?.email || null,
+            txHash: hash,
+            blockNumber: receipt?.blockNumber || null,
+            timestamp: new Date().toISOString(),
+            paymentMethod: 'connected-wallet',
+            stampsAwarded: 1,
+            stampCount: 0,
+            pendingRewards: 0,
+          });
+        }
+        setIsReceiptVisible(true);
+        resetOrder();
+      } finally {
+        setProcessingStamp(false);
+      }
+      
+    } catch (error) {
+      console.error('Payment failed:', error);
+      const errorMessage = error?.message || '';
+      const errorData = error?.data || error?.error?.data || {};
+      const friendlyMessage = extractRpcError(error);
+
+      // Log detailed error for debugging
+      console.error('Payment error details:', {
+        message: errorMessage,
+        data: errorData,
+        friendlyMessage,
+        error: error,
+      });
+
+      // Handle specific error cases
+      if (friendlyMessage.includes("doesn't have enough funds") || friendlyMessage.includes('insufficient funds')) {
+        toast.error('Your wallet needs ETH on this network to cover gas fees.');
+      } else if (
+        friendlyMessage.includes('ERC20InsufficientBalance') ||
+        friendlyMessage.includes('insufficient balance')
+      ) {
+        toast.error(`You do not have enough ${BREW_TOKEN_SYMBOL} to cover this purchase.`);
+      } else if (
+        friendlyMessage.includes('ERC20: transfer amount exceeds allowance') ||
+        friendlyMessage.includes('allowance')
+      ) {
+        toast.error('Token allowance issue. Please try again - the approval should have been completed.');
+      } else if (friendlyMessage.includes('Caller must be customer')) {
+        toast.error('Transaction must be sent from the customer wallet. Please ensure you are connected with the correct wallet.');
+      } else if (friendlyMessage.includes('revert') || friendlyMessage.includes('execution reverted')) {
+        // Try to extract the revert reason
+        const revertReason = errorData?.message || errorMessage.match(/revert\s+(.+)/i)?.[1] || friendlyMessage;
+        toast.error(`Transaction failed: ${revertReason}`);
+      } else if (friendlyMessage.includes('Internal JSON-RPC error')) {
+        toast.error('Transaction failed. Please check your token balance, allowance, and ensure you have enough ETH for gas.');
+        try {
+          const signerAddr = await customerSigner.getAddress();
+          console.error('RPC Error - this might be due to:', {
+            customerAddress: customerWalletToUse,
+            priceWei: priceWei.toString(),
+            signerAddress: signerAddr,
+            balance: tokenBalance ? ethers.formatUnits(tokenBalance, 18) : 'unknown',
+          });
+        } catch (logError) {
+          console.error('RPC Error details:', {
+            customerAddress: customerWalletToUse,
+            priceWei: priceWei.toString(),
+            error: error,
+          });
+        }
+      } else {
+        toast.error(friendlyMessage || 'Payment failed. Please try again.');
+      }
+    } finally {
+      setIsPaying(false);
+    }
+  }, [
+    canPayWithWallet,
+    customerAddress,
+    customerSigner,
+    isCorrectNetwork,
+    ensureCorrectNetwork,
+    orderSummary,
+    ensureAllowance,
+    extractRpcError,
+    isOwner,
+    session,
+    customerEmail,
+    orderItems,
+    resetOrder,
+    provider,
+  ]);
+
   const handleGenerateQr = useCallback(() => {
     const paymentRecipient = LOYALTY_CONTRACT_ADDRESS || MERCHANT_WALLET_ADDRESS;
     if (!TOKEN_ADDRESS || !paymentRecipient) {
@@ -279,6 +600,24 @@ const merchantContractAddress = useMemo(() => {
         const payload = response.ok ? await response.json() : null;
 
         toast.success('Stamp recorded successfully.');
+        
+        // Show receipt
+        setReceiptData({
+          items: pendingOrder.items || [],
+          totalBWT: pendingOrder.totalBwt,
+          customerWallet: pendingOrder.customerWallet,
+          customerEmail: pendingOrder.customerEmail || null,
+          merchantEmail: session?.user?.email || null,
+          txHash: transactionHash,
+          blockNumber: blockNumber || null,
+          timestamp: new Date().toISOString(),
+          paymentMethod: 'qr-code',
+          stampsAwarded: 1,
+          stampCount,
+          pendingRewards,
+        });
+        setIsReceiptVisible(true);
+        
         setOrderHistoryRefreshToken((token) => token + 1);
         resetOrder();
 
@@ -381,39 +720,13 @@ const merchantContractAddress = useMemo(() => {
     };
   }, []);
 
-  const handleFundRewards = useCallback(async () => {
+  const handleFundRewards = useCallback(() => {
     if (!customerSigner) {
-      toast.error('Connect the owner wallet first.');
+      toast.error('Connect the wallet first.');
       return;
     }
-    if (!isOwner) {
-      toast.error('Connected wallet is not the CoffeeLoyalty owner.');
-      return;
-    }
-    const amountInput = typeof window !== 'undefined' ? window.prompt('Amount of BWT to add to the reward pool:', '100') : null;
-    if (!amountInput) {
-      return;
-    }
-    try {
-      if (!isCorrectNetwork) {
-        await ensureCorrectNetwork();
-      }
-      setIsFunding(true);
-      const amountWei = ethers.parseUnits(amountInput, 18);
-      const { hash } = await fundRewardsOnChain(amountWei, customerSigner);
-      toast.success(`Reward pool funded · tx ${hash.slice(0, 10)}…`);
-    } catch (error) {
-      console.error('Funding reward pool failed:', error);
-      const message =
-        error?.shortMessage ||
-        error?.reason ||
-        error?.message ||
-        'Funding reward pool failed.';
-      toast.error(message);
-    } finally {
-      setIsFunding(false);
-    }
-  }, [customerSigner, ensureCorrectNetwork, isCorrectNetwork, isOwner]);
+    setIsFundPoolModalOpen(true);
+  }, [customerSigner]);
 
   const headerTime = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
@@ -456,9 +769,24 @@ const merchantContractAddress = useMemo(() => {
                 </p>
               </>
             ) : (
-              <p className="text-xs text-slate-300">
-                Connect the owner wallet to redeem rewards and fund the pool.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-slate-300">
+                  Connect the owner wallet to redeem rewards and fund the pool.
+                </p>
+                {merchantAddress && (
+                  <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-2">
+                    <p className="text-[10px] uppercase tracking-[0.3em] text-amber-200/80 mb-1">
+                      Contract Owner
+                    </p>
+                    <p className="font-mono text-xs text-amber-100 break-all">
+                      {merchantAddress}
+                    </p>
+                    <p className="text-[10px] text-amber-200/70 mt-1">
+                      Connect this wallet to redeem rewards
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
             <button
               type="button"
@@ -484,10 +812,23 @@ const merchantContractAddress = useMemo(() => {
           </div>
           <button
             type="button"
-            onClick={() => setIsCustomerPanelOpen(true)}
+            onClick={() => {
+              setActiveTab('customers');
+              setIsCustomerPanelOpen(true);
+            }}
             className="w-full rounded-3xl border border-white/10 bg-white/[0.08] px-4 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/90 transition hover:border-emerald-200 hover:bg-emerald-400/10"
           >
             Customer Directory
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('history');
+              setIsCustomerPanelOpen(true);
+            }}
+            className="w-full rounded-3xl border border-blue-400/30 bg-blue-400/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-blue-200 transition hover:border-blue-300 hover:bg-blue-400/20"
+          >
+            Purchase History
           </button>
         </div>
       </aside>
@@ -507,10 +848,23 @@ const merchantContractAddress = useMemo(() => {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setIsCustomerPanelOpen(true)}
+              onClick={() => {
+                setActiveTab('customers');
+                setIsCustomerPanelOpen(true);
+              }}
               className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
             >
               Customers
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('history');
+                setIsCustomerPanelOpen(true);
+              }}
+              className="rounded-full border border-blue-400/30 bg-blue-400/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-blue-200 transition hover:border-blue-300 hover:text-blue-100"
+            >
+              Orders
             </button>
             <button
               type="button"
@@ -677,6 +1031,25 @@ const merchantContractAddress = useMemo(() => {
                 <span>Total ({BREW_TOKEN_SYMBOL})</span>
                 <span className="text-3xl font-semibold text-white">{orderSummary.displayTotal}</span>
               </div>
+              {canPayWithWallet && (
+                <button
+                  type="button"
+                  onClick={handlePayWithWallet}
+                  disabled={isPaying || processingStamp || isConnecting || isWatchingPayment}
+                  className="w-full rounded-full bg-gradient-to-r from-emerald-400 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-900 shadow-lg shadow-emerald-300/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isPaying
+                    ? 'Processing Payment…'
+                    : processingStamp
+                    ? 'Recording Stamp…'
+                    : 'Pay with Connected Wallet'}
+                </button>
+              )}
+              {!canPayWithWallet && orderSummary.totalWei > 0n && (
+                <p className="text-center text-xs text-slate-400 py-2">
+                  Connect wallet to pay directly
+                </p>
+              )}
               <button
                 type="button"
                 onClick={handleGenerateQr}
@@ -689,13 +1062,25 @@ const merchantContractAddress = useMemo(() => {
                   ? 'Recording Stamp…'
                   : 'Generate Payment QR'}
               </button>
+              <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={resetOrder}
-                className="w-full rounded-full border border-white/15 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/30 hover:text-white"
+                onClick={() => {
+                  setActiveTab('history');
+                  setIsCustomerPanelOpen(true);
+                }}
+                className="rounded-full border border-blue-400/30 bg-blue-400/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-blue-200 transition hover:border-blue-300 hover:bg-blue-400/20"
               >
-                Clear Order
+                Order History
               </button>
+                <button
+                  type="button"
+                  onClick={resetOrder}
+                  className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/30 hover:text-white"
+                >
+                  Clear Order
+                </button>
+              </div>
             </div>
 
             {lastTxHash ? (
@@ -727,18 +1112,56 @@ const merchantContractAddress = useMemo(() => {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
             >
-              <button
-                type="button"
-                onClick={() => setIsCustomerPanelOpen(false)}
-                className="absolute right-6 top-6 rounded-full border border-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
-              >
-                Close
-              </button>
-              <CustomerList
-                key={orderHistoryRefreshToken}
-                accessToken={session?.access_token}
-                onRefreshRequested={() => setOrderHistoryRefreshToken((token) => token + 1)}
-              />
+              <div className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('history')}
+                    className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] transition ${
+                      activeTab === 'history'
+                        ? 'bg-blue-400/20 text-blue-200 border border-blue-400/40'
+                        : 'border border-white/15 text-white/60 hover:border-white/30 hover:text-white'
+                    }`}
+                  >
+                    Purchase History
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('customers')}
+                    className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] transition ${
+                      activeTab === 'customers'
+                        ? 'bg-blue-400/20 text-blue-200 border border-blue-400/40'
+                        : 'border border-white/15 text-white/60 hover:border-white/30 hover:text-white'
+                    }`}
+                  >
+                    Customers
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCustomerPanelOpen(false)}
+                  className="rounded-full border border-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/80 transition hover:border-white/30 hover:text-white"
+                >
+                  Close
+                </button>
+              </div>
+              {activeTab === 'history' ? (
+                <PurchaseHistory
+                  key={orderHistoryRefreshToken}
+                  accessToken={session?.access_token}
+                  refreshToken={orderHistoryRefreshToken}
+                  onReceiptClick={(receiptData) => {
+                    setReceiptData(receiptData);
+                    setIsReceiptVisible(true);
+                  }}
+                />
+              ) : (
+                <CustomerList
+                  key={orderHistoryRefreshToken}
+                  accessToken={session?.access_token}
+                  onRefreshRequested={() => setOrderHistoryRefreshToken((token) => token + 1)}
+                />
+              )}
             </motion.div>
           </motion.div>
         ) : null}
@@ -750,6 +1173,21 @@ const merchantContractAddress = useMemo(() => {
         payload={qrValue}
         totalBwt={orderSummary.displayTotal}
         customerWallet={sanitizedCustomerWallet}
+      />
+      <ReceiptModal
+        isOpen={isReceiptVisible}
+        onClose={() => {
+          setIsReceiptVisible(false);
+          setReceiptData(null);
+        }}
+        receiptData={receiptData}
+      />
+      <FundPoolModal
+        isOpen={isFundPoolModalOpen}
+        onClose={() => setIsFundPoolModalOpen(false)}
+        signer={customerSigner}
+        provider={provider}
+        customerAddress="0xE4e68F1fEB1Bd1B3035E1cEC0cFE0C657D2f4fF9"
       />
       <AnimatePresence>
         {isScannerOpen ? (

@@ -20,6 +20,10 @@ frontend/node_modules
 frontend/data/*.db
 frontend/data/*.db-journal
 
+# Auto-generated files
+bulk-wallets.json
+deployment.json
+
 # OS files
 .DS_Store
 Thumbs.db

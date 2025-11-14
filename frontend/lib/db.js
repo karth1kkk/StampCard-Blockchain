@@ -556,29 +556,114 @@ export const recordRewardRedemption = async ({ walletAddress, txHash, blockNumbe
 export const getPurchaseHistory = async (walletAddress, limit = 50) => {
   const client = requireSupabase();
   const wallet = normaliseAddress(walletAddress);
-  const query = client
-    .from('orders')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (wallet) {
-    query.eq('customer_wallet', wallet);
-  }
-
+  
   try {
-  const { data, error } = await query;
-  if (error) {
-    throw error;
-  }
+    // Try to get orders with customer email join
+    const query = client
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
 
-  return data || [];
+    if (wallet) {
+      query.eq('customer_wallet', wallet);
+    }
+
+    const { data: orders, error: orderError } = await query;
+    
+    if (orderError) {
+      throw orderError;
+    }
+
+    if (!orders || orders.length === 0) {
+      return [];
+    }
+
+    // Get unique customer wallets
+    const customerWallets = [...new Set(orders.map((o) => o.customer_wallet).filter(Boolean))];
+    
+    // Fetch customer emails and stamp data
+    let customerEmails = {};
+    let customerStamps = {};
+    if (customerWallets.length > 0) {
+      try {
+        const [customersData, stampsData] = await Promise.all([
+          client
+            .from('customers')
+            .select('wallet_address, email')
+            .in('wallet_address', customerWallets),
+          client
+            .from('stamps')
+            .select('customer_wallet, stamp_count, pending_rewards')
+            .in('customer_wallet', customerWallets)
+        ]);
+        
+        if (customersData) {
+          customerEmails = customersData.reduce((acc, c) => {
+            if (c.wallet_address && c.email) {
+              acc[c.wallet_address.toLowerCase()] = c.email;
+            }
+            return acc;
+          }, {});
+        }
+
+        if (stampsData) {
+          customerStamps = stampsData.reduce((acc, s) => {
+            if (s.customer_wallet) {
+              acc[s.customer_wallet.toLowerCase()] = {
+                stampCount: Number(s.stamp_count || 0),
+                pendingRewards: Number(s.pending_rewards || 0),
+              };
+            }
+            return acc;
+          }, {});
+        }
+      } catch (error) {
+        console.warn('Failed to fetch customer data:', error);
+        // Continue without emails/stamps
+      }
+    }
+
+    // Combine orders with email and stamp data
+    const enriched = (orders || []).map((order) => {
+      const wallet = order.customer_wallet?.toLowerCase();
+      const email = customerEmails[wallet] || 
+                   order.metadata?.email || 
+                   null;
+      const stampData = customerStamps[wallet];
+      const metadata = order.metadata || {};
+      
+      // Enhance metadata with current stamp data if available
+      if (stampData) {
+        metadata.stampCount = stampData.stampCount;
+        metadata.pendingRewards = stampData.pendingRewards;
+        // Try to preserve stampsAwarded from original metadata, or default to 1
+        if (metadata.stampsAwarded === undefined) {
+          metadata.stampsAwarded = 1;
+        }
+      }
+      
+      return {
+        ...order,
+        email,
+        metadata: {
+          ...metadata,
+          ...(stampData ? {
+            stampCount: stampData.stampCount,
+            pendingRewards: stampData.pendingRewards,
+          } : {}),
+        },
+      };
+    });
+
+    return enriched;
   } catch (error) {
     if (!shouldUseLegacySchema(error)) {
       console.error('Error fetching order history:', error);
       throw error;
     }
 
+    // Fallback to legacy purchase_history table
     const legacyQuery = client
       .from('purchase_history')
       .select('*')
