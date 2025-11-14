@@ -312,7 +312,7 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                 <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-3">Items Purchased</p>
                 <div className="space-y-3">
                   {receiptPayload.items.map((item, idx) => {
-                    // Try to get full product details from COFFEE_MENU
+                    // Try to get full product details from database products
                     const productId = item.id || item.product_id;
                     const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
                     const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';

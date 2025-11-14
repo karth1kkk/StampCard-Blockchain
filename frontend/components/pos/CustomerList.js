@@ -388,7 +388,7 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                   const currentCardNumber = cardsCompleted + 1;
                   
                   return (
-                    <tr key={wallet}>
+                    <tr key={wallet} id={`customer-${wallet.toLowerCase()}`}>
                       <td className="px-4 py-3 font-mono text-xs text-slate-100">{shortWallet}</td>
                       <td className="px-4 py-3 text-xs text-slate-300">{customer.email || '—'}</td>
                       <td className="px-4 py-3">

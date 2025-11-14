@@ -582,6 +582,40 @@ const merchantContractAddress = useMemo(() => {
             stampCount: dbStampCountNum,
             pendingRewards: Number(syncResult.pending_rewards),
           });
+          
+          // Check if customer reached full stamp card (8/8)
+          const rewardThreshold = Number(syncResult.reward_threshold || STAMPS_PER_REWARD);
+          if (dbStampCountNum === rewardThreshold) {
+            const shortWallet = `${customerWalletToUse.slice(0, 6)}…${customerWalletToUse.slice(-4)}`;
+            const handleToastClick = () => {
+              setActiveTab('customers');
+              setIsCustomerPanelOpen(true);
+              // Scroll to customer after a short delay to allow panel to open
+              setTimeout(() => {
+                const customerElement = document.getElementById(`customer-${customerWalletToUse.toLowerCase()}`);
+                if (customerElement) {
+                  customerElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  // Highlight the row briefly
+                  customerElement.classList.add('ring-2', 'ring-emerald-400', 'ring-offset-2');
+                  setTimeout(() => {
+                    customerElement.classList.remove('ring-2', 'ring-emerald-400', 'ring-offset-2');
+                  }, 2000);
+                }
+              }, 300);
+            };
+            
+            const toastId = toast.success(
+              <div className="flex flex-col gap-1 cursor-pointer" onClick={handleToastClick}>
+                <div className="font-semibold">🎉 Full Stamp Card!</div>
+                <div className="text-sm">Customer {shortWallet} reached {rewardThreshold}/{rewardThreshold} stamps</div>
+                <div className="text-xs text-white/70 mt-1">Click to view stamp card</div>
+              </div>,
+              {
+                autoClose: 8000,
+                onClick: handleToastClick,
+              }
+            );
+          }
         }
 
         // Show receipt
@@ -1014,6 +1048,41 @@ const merchantContractAddress = useMemo(() => {
             stampCount: dbStampCountNum,
             pendingRewards: Number(payload.pending_rewards),
           });
+          
+          // Check if customer reached full stamp card (8/8)
+          const rewardThreshold = Number(payload.reward_threshold || STAMPS_PER_REWARD);
+          if (dbStampCountNum === rewardThreshold) {
+            const customerWallet = pendingOrder.customerWallet;
+            const shortWallet = `${customerWallet.slice(0, 6)}…${customerWallet.slice(-4)}`;
+            const handleToastClick = () => {
+              setActiveTab('customers');
+              setIsCustomerPanelOpen(true);
+              // Scroll to customer after a short delay to allow panel to open
+              setTimeout(() => {
+                const customerElement = document.getElementById(`customer-${customerWallet.toLowerCase()}`);
+                if (customerElement) {
+                  customerElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  // Highlight the row briefly
+                  customerElement.classList.add('ring-2', 'ring-emerald-400', 'ring-offset-2');
+                  setTimeout(() => {
+                    customerElement.classList.remove('ring-2', 'ring-emerald-400', 'ring-offset-2');
+                  }, 2000);
+                }
+              }, 300);
+            };
+            
+            const toastId = toast.success(
+              <div className="flex flex-col gap-1 cursor-pointer" onClick={handleToastClick}>
+                <div className="font-semibold">🎉 Full Stamp Card!</div>
+                <div className="text-sm">Customer {shortWallet} reached {rewardThreshold}/{rewardThreshold} stamps</div>
+                <div className="text-xs text-white/70 mt-1">Click to view stamp card</div>
+              </div>,
+              {
+                autoClose: 8000,
+                onClick: handleToastClick,
+              }
+            );
+          }
         }
 
         toast.success('Stamp recorded successfully.');
@@ -1403,7 +1472,29 @@ const merchantContractAddress = useMemo(() => {
             </div>
           </section>
 
-          <section className="flex w-full max-w-md flex-col border-l border-white/5 bg-white/[0.03] px-6 py-6 shadow-[-20px_0_40px_rgba(10,10,20,0.35)]">
+          <section className="relative flex w-full max-w-md flex-col border-l border-white/5 bg-white/[0.03] px-6 py-6 shadow-[-20px_0_40px_rgba(10,10,20,0.35)]">
+            {/* Payment Processing Loader Overlay */}
+            {(isPaying || processingStamp) && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm rounded-r-3xl">
+                <div className="flex flex-col items-center gap-4">
+                  <div className="relative">
+                    <div className="h-16 w-16 animate-spin rounded-full border-4 border-emerald-300/30 border-t-emerald-400"></div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="h-8 w-8 rounded-full bg-emerald-400/20"></div>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-semibold text-white">
+                      {isPaying ? 'Processing Payment...' : 'Recording Stamp...'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      Please wait while we process your transaction
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div>
               <p className="text-[10px] uppercase tracking-[0.4em] text-white/40">Current order</p>
               <h3 className="mt-2 text-xl font-semibold text-white">Summary</h3>
@@ -1466,13 +1557,13 @@ const merchantContractAddress = useMemo(() => {
                     placeholder="0x…"
                     className="flex-1 rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-300/70 focus:ring-1 focus:ring-emerald-300/50"
                   />
-                  <button
+                  {/* <button
                     type="button"
                     onClick={() => setIsScannerOpen(true)}
                     className="rounded-2xl border border-white/15 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-emerald-200 hover:text-white"
                   >
                     Scan QR
-                  </button>
+                  </button> */}
                 </div>
               </label>
               {/* <label className="block text-[10px] font-semibold uppercase tracking-[0.35em] text-white/50">
