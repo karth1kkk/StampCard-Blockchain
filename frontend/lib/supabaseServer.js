@@ -11,7 +11,7 @@ const requireUrl = () => {
   }
 };
 
-const getServerClient = () => {
+export const getServerClient = () => {
   requireUrl();
   if (!supabaseAnonKey) {
     throw new Error('Supabase anon key is missing. Set NEXT_PUBLIC_SUPABASE_ANON_KEY.');

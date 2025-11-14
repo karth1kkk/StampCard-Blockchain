@@ -81,3 +81,40 @@ ON CONFLICT (id) DO NOTHING;
 -- ALTER TABLE reward_history ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 
+-- ============================================
+-- Merchant Login Codes Table
+-- Simple table to store 6-digit login codes for merchants
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS merchant_login_codes (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL UNIQUE,
+  login_code TEXT NOT NULL CHECK (LENGTH(login_code) = 6 AND login_code ~ '^[0-9]+$'),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_codes_email ON merchant_login_codes(email);
+CREATE INDEX IF NOT EXISTS idx_merchant_codes_code ON merchant_login_codes(login_code);
+
+-- Function to automatically update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_merchant_code_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = CURRENT_TIMESTAMP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_merchant_code_updated_at
+  BEFORE UPDATE ON merchant_login_codes
+  FOR EACH ROW
+  EXECUTE FUNCTION update_merchant_code_updated_at();
+
+-- View to see all merchants with their login codes
+-- SELECT 
+--   mlc.email,
+--   mlc.login_code,
+--   u.raw_user_meta_data->>'displayName' as name
+-- FROM merchant_login_codes mlc
+-- JOIN auth.users u ON u.id = mlc.user_id;

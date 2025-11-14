@@ -125,13 +125,23 @@ This compiles and deploys `BrewToken` and `CoffeeLoyalty`, then writes addresses
 ### 4. Set Up Supabase
 1. Create a Supabase project
 2. Run the SQL in `frontend/supabase-schema.sql` in your Supabase SQL Editor
-3. Add to `frontend/.env.local`:
+3. Get your Supabase keys:
+   - Go to **Project Settings** → **API** in your Supabase dashboard
+   - Copy your **Project URL** and **anon/public key**
+   - Copy your **service_role key** (keep this secret! It has admin access)
+4. Add to `frontend/.env.local`:
    ```env
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
    SUPABASE_URL=your_supabase_url
    SUPABASE_ANON_KEY=your_supabase_anon_key
+   SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
    ```
+   
+   **Important:** 
+   - The `service_role` key is required for listing merchant profiles from `auth.users`
+   - Never expose this key in client-side code or commit it to git
+   - The `.env.local` file is already in `.gitignore`
 
 ### 5. Run the Frontend
 ```bash
@@ -161,7 +171,11 @@ NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 SUPABASE_URL=...
 SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...            # Required for listing merchant profiles
 ```
+
+**Required for Profile Login:**
+- `SUPABASE_SERVICE_ROLE_KEY` – Service role key from Supabase dashboard (Project Settings → API). Required for the `/api/merchant/profiles` endpoint to list all merchants from `auth.users`.
 
 **Optional:**
 - `MERCHANT_REGISTRATION_SECRET` – Secret code for merchant registration (default: '31337')
