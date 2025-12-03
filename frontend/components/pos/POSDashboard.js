@@ -1398,7 +1398,7 @@ const merchantContractAddress = useMemo(() => {
                   Connect wallet to pay directly
                 </p>
               )}
-              {canCreateQr && (
+              {/* {canCreateQr && (
                 <button
                   type="button"
                   onClick={handleGenerateQr}
@@ -1416,7 +1416,7 @@ const merchantContractAddress = useMemo(() => {
                 <p className="text-center text-xs text-slate-400 py-2">
                   Enter customer wallet address to generate QR
                 </p>
-              )}
+              )} */}
               <div className="grid grid-cols-1">
                 <button
                   type="button"
