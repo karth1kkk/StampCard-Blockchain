@@ -55,6 +55,12 @@ export const WalletProvider = ({ children }) => {
 
   const [isOwner, setIsOwner] = useState(false);
   const [isOwnerLoading, setIsOwnerLoading] = useState(false);
+  
+  // State to track account changes for auto-refresh
+  const [pendingAccountChange, setPendingAccountChange] = useState(null);
+  
+  // Ref to track if we have an active connection (for auto-refresh on account change)
+  const hasActiveConnectionRef = useRef(false);
 
   const activeProvider = browserProvider || readOnlyProvider;
   const isCorrectNetwork =
@@ -142,18 +148,31 @@ export const WalletProvider = ({ children }) => {
     const handleAccountsChanged = (accounts) => {
       const normalised = (accounts || []).map((address) => ethers.getAddress(address));
       console.log('[Wallet] accountsChanged event:', normalised);
-      setCustomerAddress((prev) => {
-        if (!prev) {
-          return prev;
-        }
-        if (normalised.includes(prev)) {
-          return prev;
-        }
+      
+      // If no accounts, disconnect
+      if (!normalised || normalised.length === 0) {
+        setCustomerAddress(null);
         setCustomerSigner(null);
         setCustomerBalance(null);
-        return null;
-      });
-      setIsOwner(false);
+        setIsOwner(false);
+        setPendingAccountChange(null);
+        hasActiveConnectionRef.current = false;
+        return;
+      }
+
+      const newAddress = normalised[0];
+      
+      // If we have an active connection, mark for auto-refresh
+      // The separate useEffect will handle the actual refresh
+      if (hasActiveConnectionRef.current) {
+        setPendingAccountChange(newAddress);
+      } else {
+        // No previous connection, just clear state
+        setCustomerAddress(null);
+        setCustomerSigner(null);
+        setCustomerBalance(null);
+        setIsOwner(false);
+      }
     };
 
     const handleDisconnect = () => {
@@ -245,6 +264,7 @@ export const WalletProvider = ({ children }) => {
       setCustomerAddress(selectedAddress);
       setCustomerSigner(signer);
       setCustomerBalance(formattedBalance);
+      hasActiveConnectionRef.current = true;
 
       persistAutoConnectPreference(true);
 
@@ -308,6 +328,7 @@ export const WalletProvider = ({ children }) => {
     setCustomerSigner(null);
     setCustomerBalance(null);
     setIsOwner(false);
+    hasActiveConnectionRef.current = false;
     persistAutoConnectPreference(false);
   }, []);
 
@@ -317,6 +338,44 @@ export const WalletProvider = ({ children }) => {
     }
     await switchToExpectedNetwork();
   }, [networkChainId, switchToExpectedNetwork]);
+
+  // Auto-refresh wallet connection when account changes in MetaMask
+  useEffect(() => {
+    if (!pendingAccountChange) {
+      return;
+    }
+
+    // Auto-refresh connection with new account
+    const refreshConnection = async () => {
+      try {
+        if (typeof window === 'undefined' || !window.ethereum) {
+          setPendingAccountChange(null);
+          return;
+        }
+
+        const providerInstance = new ethers.BrowserProvider(window.ethereum, 'any');
+        await hydrateConnection({
+          providerInstance,
+          selectedAddress: pendingAccountChange,
+          allowSwitch: false,
+          role: 'auto-refresh',
+        });
+        console.log('[Wallet] Automatically refreshed connection to new account:', pendingAccountChange);
+      } catch (error) {
+        console.error('[Wallet] Failed to auto-refresh connection:', error);
+        // On error, clear the connection
+        setCustomerAddress(null);
+        setCustomerSigner(null);
+        setCustomerBalance(null);
+        setIsOwner(false);
+        hasActiveConnectionRef.current = false;
+      } finally {
+        setPendingAccountChange(null);
+      }
+    };
+
+    refreshConnection();
+  }, [pendingAccountChange, hydrateConnection]);
 
   useEffect(() => {
     const determineOwner = async () => {

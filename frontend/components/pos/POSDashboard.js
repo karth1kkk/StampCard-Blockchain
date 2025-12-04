@@ -1035,8 +1035,12 @@ const merchantContractAddress = useMemo(() => {
       toast.error('Connect the wallet first.');
       return;
     }
+    if (!isOwner) {
+      toast.error('Only the contract owner can fund the reward pool.');
+      return;
+    }
     setIsFundPoolModalOpen(true);
-  }, [customerSigner]);
+  }, [customerSigner, isOwner]);
 
   const headerTime = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
@@ -1100,23 +1104,21 @@ const merchantContractAddress = useMemo(() => {
                 )}
               </div>
             )}
-            <button
-              type="button"
-              onClick={handleConnectMerchant}
-              disabled={isConnecting}
-              className="mt-3 w-full rounded-full border border-emerald-300/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isConnecting
-                ? 'Connecting…'
-                : customerAddress
-                ? 'Refresh Wallet'
-                : 'Connect Wallet'}
-            </button>
+            {!customerAddress && (
+              <button
+                type="button"
+                onClick={handleConnectMerchant}
+                disabled={isConnecting}
+                className="mt-3 w-full rounded-full border border-emerald-300/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isConnecting ? 'Connecting…' : 'Connect Wallet'}
+              </button>
+            )}
             {customerAddress ? (
               <button
                 type="button"
                 onClick={handleDisconnectMerchant}
-                className="mt-2 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
               >
                 Disconnect
               </button>
@@ -1178,14 +1180,16 @@ const merchantContractAddress = useMemo(() => {
             >
               Orders
             </button>
-            <button
-              type="button"
-              onClick={handleFundRewards}
-              disabled={isConnecting || isFunding}
-              className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isFunding ? 'Funding…' : 'Fund Pool'}
-            </button>
+            {isOwner && (
+              <button
+                type="button"
+                onClick={handleFundRewards}
+                disabled={isConnecting || isFunding}
+                className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isFunding ? 'Funding…' : 'Fund Pool'}
+              </button>
+            )}
             {/* <button
               type="button"
               onClick={() => {
