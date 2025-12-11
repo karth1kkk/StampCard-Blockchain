@@ -21,18 +21,21 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
   const [isTransferring, setIsTransferring] = useState(false);
   const [balance, setBalance] = useState(null);
   const [error, setError] = useState('');
+  const [transferType, setTransferType] = useState('contract'); // 'contract' or 'custom'
 
   // Set default recipient address when modal opens
   // Default to contract address (reward pool) if available, otherwise use customerAddress
   useEffect(() => {
     if (isOpen) {
-      if (LOYALTY_ADDRESS) {
+      if (transferType === 'contract' && LOYALTY_ADDRESS) {
         setRecipientAddress(LOYALTY_ADDRESS);
-      } else if (customerAddress) {
+      } else if (transferType === 'contract' && customerAddress) {
         setRecipientAddress(customerAddress);
+      } else if (transferType === 'custom') {
+        setRecipientAddress('');
       }
     }
-  }, [isOpen, customerAddress]);
+  }, [isOpen, customerAddress, transferType]);
 
   // Fetch token balance
   useEffect(() => {
@@ -99,6 +102,7 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
       // Close modal and reset form
       onClose();
       setAmount('200');
+      setTransferType('contract');
       if (LOYALTY_ADDRESS) {
         setRecipientAddress(LOYALTY_ADDRESS);
       } else if (customerAddress) {
@@ -129,6 +133,7 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
     if (!isTransferring) {
       setError('');
       setAmount('200');
+      setTransferType('contract');
       if (LOYALTY_ADDRESS) {
         setRecipientAddress(LOYALTY_ADDRESS);
       } else if (customerAddress) {
@@ -165,9 +170,9 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
           >
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <h2 className="text-2xl font-bold text-white">Fund Reward Pool</h2>
+                <h2 className="text-2xl font-bold text-white">Transfer BWT Tokens</h2>
                 <p className="mt-1 text-xs text-slate-400">
-                  Transfer BWT tokens to the contract address to fund the reward pool
+                  Transfer BWT tokens to the contract address or another wallet
                 </p>
               </div>
               <button
@@ -189,10 +194,55 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
                 </p>
               </div>
 
+              {/* Transfer Type Selection */}
+              <div>
+                <label className="block text-xs uppercase tracking-[0.3em] text-white/70 mb-3">
+                  Transfer To
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTransferType('contract');
+                      if (LOYALTY_ADDRESS) {
+                        setRecipientAddress(LOYALTY_ADDRESS);
+                      } else if (customerAddress) {
+                        setRecipientAddress(customerAddress);
+                      }
+                      setError('');
+                    }}
+                    disabled={isTransferring}
+                    className={`rounded-xl border px-4 py-3 text-sm font-semibold transition ${
+                      transferType === 'contract'
+                        ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-200'
+                        : 'border-white/10 bg-black/30 text-white/70 hover:border-white/20'
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    Contract Address
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTransferType('custom');
+                      setRecipientAddress('');
+                      setError('');
+                    }}
+                    disabled={isTransferring}
+                    className={`rounded-xl border px-4 py-3 text-sm font-semibold transition ${
+                      transferType === 'custom'
+                        ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-200'
+                        : 'border-white/10 bg-black/30 text-white/70 hover:border-white/20'
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    Custom Address
+                  </button>
+                </div>
+              </div>
+
               {/* Recipient Address */}
               <div>
                 <label htmlFor="recipient-address" className="block text-xs uppercase tracking-[0.3em] text-white/70 mb-2">
-                  Contract Address (Reward Pool)
+                  {transferType === 'contract' ? 'Contract Address (Reward Pool)' : 'Recipient Wallet Address'}
                 </label>
                 <input
                   id="recipient-address"
@@ -202,13 +252,23 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
                     setRecipientAddress(e.target.value);
                     setError('');
                   }}
-                  placeholder={LOYALTY_ADDRESS || "0x..."}
+                  placeholder={transferType === 'contract' ? (LOYALTY_ADDRESS || "0x...") : "Enter wallet address (0x...)"}
                   className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white placeholder:text-white/30 focus:border-emerald-400/50 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
-                  disabled={isTransferring}
+                  disabled={isTransferring || transferType === 'contract'}
                 />
-                {LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase() && (
+                {transferType === 'contract' && LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase() && (
                   <p className="mt-2 text-xs text-emerald-300">
                     ✓ This will fund the reward pool. The contract needs BWT to pay rewards to customers.
+                  </p>
+                )}
+                {transferType === 'custom' && recipientAddress && ethers.isAddress(recipientAddress) && (
+                  <p className="mt-2 text-xs text-emerald-300">
+                    ✓ Valid wallet address
+                  </p>
+                )}
+                {transferType === 'custom' && recipientAddress && !ethers.isAddress(recipientAddress) && (
+                  <p className="mt-2 text-xs text-red-300">
+                    ⚠ Invalid wallet address format
                   </p>
                 )}
               </div>
@@ -253,9 +313,11 @@ export default function FundPoolModal({ isOpen, onClose, signer, provider, custo
 
               {/* Info */}
               <p className="text-xs text-center text-slate-400">
-                {LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase()
+                {transferType === 'contract' && LOYALTY_ADDRESS && recipientAddress.toLowerCase() === LOYALTY_ADDRESS.toLowerCase()
                   ? 'This will transfer BWT tokens from your wallet to the contract to fund the reward pool. Customers can then redeem rewards.'
-                  : 'This will transfer tokens from your connected wallet to the recipient address.'}
+                  : transferType === 'contract'
+                  ? 'This will transfer BWT tokens to the contract address to fund the reward pool.'
+                  : 'This will transfer BWT tokens from your connected wallet to the specified recipient address.'}
               </p>
             </div>
           </motion.div>

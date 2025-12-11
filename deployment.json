@@ -1,12 +1,12 @@
 {
-  "brewTokenAddress": "0x74a0FcA8671518e2E3B34bc621202B6fC046E493",
-  "coffeeLoyaltyAddress": "0x77792009A8e46F0f32732682EC6c4c35642751d2",
+  "brewTokenAddress": "0x35d7978755d5727f6DC690705795211ec099CB2D",
+  "coffeeLoyaltyAddress": "0xfefe88c33dcc1f7be7A2EC8696470913Ac86380b",
   "network": "localhost",
   "chainId": 31337,
-  "rpcUrl": "http://192.168.0.103:8545",
+  "rpcUrl": "http://192.168.0.102:8545",
   "nativeSymbol": "ETH",
   "deployer": "0x25F1FDc174B81A12C2140df2BB9303b1e3bE3d8b",
   "rewardThreshold": 8,
   "rewardTokenAmount": "5000000000000000000",
-  "timestamp": "2025-12-04T00:55:34.476Z"
+  "timestamp": "2025-12-11T01:59:37.672Z"
 }

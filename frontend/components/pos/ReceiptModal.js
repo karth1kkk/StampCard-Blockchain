@@ -99,19 +99,20 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
       'ITEMS PURCHASED',
       '───────────────────────────────────────────────────────',
       ...receiptPayload.items.map((item, idx) => {
+        const isVoucher = item.isVoucher || item.id?.startsWith('voucher-');
         const productId = item.id || item.product_id;
-        const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
+        const fullProduct = productId && !isVoucher ? coffeeMenu.find((p) => p.id === productId) : null;
         const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';
         const itemDescription = item.description || fullProduct?.description || null;
-        const itemPrice = item.price || item.price_bwt || fullProduct?.price || 0;
+        const itemPrice = isVoucher ? 0 : (item.price || item.price_bwt || fullProduct?.price || 0);
         const itemQuantity = item.quantity || 1;
         const itemTotal = Number(itemPrice) * Number(itemQuantity);
         
         return [
-          `${itemName}`,
+          `${itemName}${isVoucher ? ' (Free Voucher)' : ''}`,
           itemDescription ? `  ${itemDescription}` : '',
-          `  Qty: ${itemQuantity} × ${formatAmount(itemPrice)} ${BREW_TOKEN_SYMBOL}`,
-          `  Total: ${formatAmount(itemTotal)} ${BREW_TOKEN_SYMBOL}`,
+          `  Qty: ${itemQuantity} × ${isVoucher ? 'FREE' : `${formatAmount(itemPrice)} ${BREW_TOKEN_SYMBOL}`}`,
+          `  Total: ${isVoucher ? 'FREE' : `${formatAmount(itemTotal)} ${BREW_TOKEN_SYMBOL}`}`,
           '',
         ].filter(Boolean);
       }).flat(),
@@ -148,15 +149,18 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
             email: receiptPayload.merchant.email || null,
           },
           items: receiptPayload.items.map((item) => {
+            const isVoucher = item.isVoucher || item.id?.startsWith('voucher-');
             const productId = item.id || item.product_id;
-            const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
+            const fullProduct = productId && !isVoucher ? coffeeMenu.find((p) => p.id === productId) : null;
+            const itemPrice = isVoucher ? 0 : (item.price || item.price_bwt || fullProduct?.price || 0);
             return {
               id: productId || null,
               name: item.name || item.product_name || fullProduct?.name || 'Coffee',
               description: item.description || fullProduct?.description || null,
               quantity: item.quantity || 1,
-              price: item.price || item.price_bwt || fullProduct?.price || 0,
-              total: (item.price || item.price_bwt || fullProduct?.price || 0) * (item.quantity || 1),
+              price: itemPrice,
+              total: itemPrice * (item.quantity || 1),
+              isVoucher: isVoucher,
             };
           }),
           totals: {
@@ -312,33 +316,42 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                 <p className="text-xs text-slate-500 uppercase tracking-[0.2em] mb-3">Items Purchased</p>
                 <div className="space-y-3">
                   {receiptPayload.items.map((item, idx) => {
+                    // Check if this is a voucher item
+                    const isVoucher = item.isVoucher || item.id?.startsWith('voucher-');
+                    
                     // Try to get full product details from database products
                     const productId = item.id || item.product_id;
-                    const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
+                    const fullProduct = productId && !isVoucher ? coffeeMenu.find((p) => p.id === productId) : null;
                     const itemName = item.name || item.product_name || fullProduct?.name || 'Coffee';
                     const itemDescription = item.description || fullProduct?.description || null;
-                    const itemPrice = item.price || item.price_bwt || fullProduct?.price || 0;
+                    // Voucher items are always $0
+                    const itemPrice = isVoucher ? 0 : (item.price || item.price_bwt || fullProduct?.price || 0);
                     const itemQuantity = item.quantity || 1;
                     const itemTotal = Number(itemPrice) * Number(itemQuantity);
 
                     return (
-                      <div key={idx} className="flex items-start justify-between py-3 border-b border-slate-200">
+                      <div key={idx} className={`flex items-start justify-between py-3 border-b ${isVoucher ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-200'}`}>
                         <div className="flex-1 pr-4">
                           <div className="flex items-start gap-3">
                             <div className="flex-1">
-                              <p className="font-semibold text-base text-slate-900">{itemName}</p>
+                              <p className={`font-semibold text-base ${isVoucher ? 'text-emerald-900' : 'text-slate-900'}`}>
+                                {itemName}
+                                {isVoucher && (
+                                  <span className="ml-2 text-xs text-emerald-600 font-normal">(Free Voucher)</span>
+                                )}
+                              </p>
                               {itemDescription && (
                                 <p className="text-xs text-slate-500 mt-1">{itemDescription}</p>
                               )}
-                              <p className="text-xs text-slate-400 mt-2">
-                                Qty: {itemQuantity} × {formatAmount(itemPrice)} {BREW_TOKEN_SYMBOL}
+                              <p className={`text-xs mt-2 ${isVoucher ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                Qty: {itemQuantity} × {isVoucher ? 'FREE' : `${formatAmount(itemPrice)} ${BREW_TOKEN_SYMBOL}`}
                               </p>
                             </div>
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="font-bold text-lg text-slate-900">
-                            {formatAmount(itemTotal)} {BREW_TOKEN_SYMBOL}
+                          <p className={`font-bold text-lg ${isVoucher ? 'text-emerald-700' : 'text-slate-900'}`}>
+                            {isVoucher ? 'FREE' : `${formatAmount(itemTotal)} ${BREW_TOKEN_SYMBOL}`}
                           </p>
                         </div>
                       </div>
@@ -407,15 +420,18 @@ export default function ReceiptModal({ isOpen, onClose, receiptData }) {
                           email: receiptPayload.merchant.email || null,
                         },
                         items: receiptPayload.items.map((item) => {
+                          const isVoucher = item.isVoucher || item.id?.startsWith('voucher-');
                           const productId = item.id || item.product_id;
-                          const fullProduct = productId ? coffeeMenu.find((p) => p.id === productId) : null;
+                          const fullProduct = productId && !isVoucher ? coffeeMenu.find((p) => p.id === productId) : null;
+                          const itemPrice = isVoucher ? 0 : (item.price || item.price_bwt || fullProduct?.price || 0);
                           return {
                             id: productId || null,
                             name: item.name || item.product_name || fullProduct?.name || 'Coffee',
                             description: item.description || fullProduct?.description || null,
                             quantity: item.quantity || 1,
-                            price: item.price || item.price_bwt || fullProduct?.price || 0,
-                            total: (item.price || item.price_bwt || fullProduct?.price || 0) * (item.quantity || 1),
+                            price: itemPrice,
+                            total: itemPrice * (item.quantity || 1),
+                            isVoucher: isVoucher,
                           };
                         }),
                         totals: {
