@@ -63,8 +63,10 @@ contract CoffeeLoyalty is Ownable {
         _incrementStamps(customer);
     }
 
-    function redeemReward(address customer) external onlyOwner {
+    function redeemReward(address customer) external {
         require(customer != address(0), "Invalid customer");
+        // Allow either the contract owner OR the customer themselves to redeem
+        require(msg.sender == owner() || msg.sender == customer, "Only owner or customer can redeem");
         uint256 rewards = pendingRewards[customer];
         require(rewards > 0, "No rewards pending");
 

@@ -221,8 +221,11 @@ export const recordPurchase = async ({
   if (!wallet) {
     throw new Error('wallet address required');
   }
-  if (!txHash) {
-    throw new Error('transaction hash required');
+  
+  // For voucher orders, txHash can be null (no blockchain transaction)
+  const isVoucherOrder = metadata?.isVoucherOrder || status === 'VOUCHER_REDEEMED';
+  if (!isVoucherOrder && !txHash) {
+    throw new Error('transaction hash required for regular purchases');
   }
 
   const now = new Date().toISOString();

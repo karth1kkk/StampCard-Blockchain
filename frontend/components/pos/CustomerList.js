@@ -4,12 +4,15 @@ import { ethers } from 'ethers';
 import { useWallet } from '../../context/WalletContext';
 import { redeemRewardOnChain, getPendingRewards, getRewardTokenAmount, getTokenContract, getStampCount } from '../../lib/web3';
 import StampCard from './StampCard';
+import VoucherSelectionModal from './VoucherSelectionModal';
 
-export default function CustomerList({ accessToken, onRefreshRequested, refreshToken }) {
+export default function CustomerList({ accessToken, onRefreshRequested, refreshToken, onVoucherSelected }) {
   const { customerSigner, ensureCorrectNetwork, isCorrectNetwork, isConnecting, isOwner, customerAddress, merchantAddress } = useWallet();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [redeemingWallet, setRedeemingWallet] = useState('');
+  const [showVoucherModal, setShowVoucherModal] = useState(false);
+  const [pendingRedemptionWallet, setPendingRedemptionWallet] = useState(null);
 
   const fetchCustomers = useCallback(async () => {
     if (!accessToken) {
@@ -77,75 +80,82 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
     );
   }, [customers]);
 
-  const handleRedeem = useCallback(
+  const handleRedeemClick = useCallback(
     async (walletAddress) => {
       if (!walletAddress) {
         return;
       }
-      if (!customerSigner) {
-        toast.error('Connect the merchant wallet in MetaMask to redeem rewards.');
-        return;
-      }
-      if (!isOwner) {
-        toast.error('Connected wallet is not authorised to redeem rewards. Only the contract owner can redeem rewards.');
-        return;
-      }
       
-      const provider = customerSigner.provider;
-      if (!provider) {
-        toast.error('Provider not available. Please reconnect your wallet.');
+      if (!customerSigner) {
+        toast.error('Please connect your wallet first.');
         return;
       }
 
+      // Get the actual signer address immediately to verify authorization
+      let signerAddress;
+      try {
+        signerAddress = await customerSigner.getAddress();
+        console.log('[Redemption Check] Signer address:', signerAddress);
+        console.log('[Redemption Check] Target wallet address:', walletAddress);
+        console.log('[Redemption Check] Is owner:', isOwner);
+      } catch (error) {
+        toast.error('Unable to get wallet address. Please reconnect your wallet.');
+        return;
+      }
+
+      // Normalize addresses for comparison
+      const normalizedSigner = signerAddress.toLowerCase();
+      const normalizedTarget = walletAddress.toLowerCase();
+      
+      // Check if customer is redeeming their own reward
+      const isCustomerRedeeming = normalizedSigner === normalizedTarget;
+      
+      // Verify authorization: must be either the customer themselves OR the owner
+      if (!isCustomerRedeeming && !isOwner) {
+        toast.error(
+          `Authorization failed. Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) is not the customer (${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}) and is not the contract owner. Only the customer or contract owner can redeem rewards.`
+        );
+        return;
+      }
+
+      const provider = customerSigner.provider;
+      
+      // Verify on-chain pending rewards before showing voucher modal
       try {
         if (!isCorrectNetwork) {
           await ensureCorrectNetwork();
         }
 
-        // Verify on-chain pending rewards before attempting redemption
         const onChainPendingRewards = await getPendingRewards(walletAddress, provider);
-        const onChainStampCount = await getStampCount(walletAddress, provider);
+        console.log('[Redemption Check] On-chain pending rewards:', onChainPendingRewards.toString());
         
-        // Find the customer in the current list to show database values
+        // Find customer in database to compare
         const customerData = customers.find(
           (c) => (c.customer_wallet || c.wallet_address)?.toLowerCase() === walletAddress.toLowerCase()
         );
         const dbPendingRewards = customerData ? Number(customerData.pending_rewards || 0) : 0;
-        const dbStampCount = customerData ? Number(customerData.stamp_count || 0) : 0;
+        console.log('[Redemption Check] Database pending rewards:', dbPendingRewards);
         
-        if (onChainPendingRewards === 0) {
-          // Show detailed sync mismatch information
-          const syncInfo = `Database: ${dbPendingRewards} pending, ${dbStampCount} stamps | On-chain: ${onChainPendingRewards} pending, ${onChainStampCount} stamps`;
-          console.warn('Reward sync mismatch:', {
-            wallet: walletAddress,
-            database: { pendingRewards: dbPendingRewards, stampCount: dbStampCount },
-            onChain: { pendingRewards: onChainPendingRewards, stampCount: onChainStampCount },
-          });
-          
-          const errorDetails = [
-            `No pending rewards found on-chain for this customer.`,
-            ``,
-            `Database Status:`,
-            `  • Pending Rewards: ${dbPendingRewards}`,
-            `  • Stamp Count: ${dbStampCount}`,
-            ``,
-            `On-Chain Status:`,
-            `  • Pending Rewards: ${onChainPendingRewards}`,
-            `  • Stamp Count: ${onChainStampCount}`,
-            ``,
-            dbStampCount !== onChainStampCount
-              ? `⚠️ Stamp counts differ! This suggests stamps were recorded in the database but not on-chain.`
-              : `⚠️ The database shows ${dbPendingRewards} pending reward${dbPendingRewards !== 1 ? 's' : ''}, but the contract shows ${onChainPendingRewards}.`,
-            ``,
-            `Solution: Make sure to record stamps on-chain after each purchase using the "Record Stamp" function.`,
-          ].join('\n');
-          
-          toast.error(errorDetails, { autoClose: 10000 });
-          await fetchCustomers();
+        if (onChainPendingRewards === 0n) {
+          // Show detailed error if database shows rewards but on-chain doesn't
+          if (dbPendingRewards > 0) {
+            toast.error(
+              `Database shows ${dbPendingRewards} pending reward(s), but on-chain shows 0. The database is out of sync. The reward may have already been redeemed. Please refresh the page.`,
+              { autoClose: 10000 }
+            );
+          } else {
+            toast.error('No pending rewards found on-chain for this customer.');
+          }
           return;
         }
 
-        // Check reward pool balance
+        // NOTE: For voucher redemptions, we skip the reward pool check because vouchers are free drinks
+        // and don't require BWT token transfers. The contract will still update on-chain state
+        // (decrement pending rewards), but if rewardTokenAmount > 0 and pool is empty, the contract
+        // will revert. We handle this gracefully in the error handler.
+        // 
+        // If you want to enable BWT token rewards instead of vouchers, uncomment the check below:
+        /*
         const rewardTokenAmount = await getRewardTokenAmount(provider);
         if (rewardTokenAmount > 0n) {
           const LOYALTY_ADDRESS = process.env.NEXT_PUBLIC_LOYALTY_ADDRESS;
@@ -166,16 +176,142 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
             return;
           }
         }
+        */
+
+        // Show voucher selection modal
+        setPendingRedemptionWallet(walletAddress);
+        setShowVoucherModal(true);
+      } catch (error) {
+        console.error('Error checking redemption eligibility:', error);
+        toast.error('Unable to check redemption eligibility. Please try again.');
+      }
+    },
+    [customerSigner, ensureCorrectNetwork, isCorrectNetwork, isOwner, customers]
+  );
+
+  const handleVoucherSelected = useCallback(
+    async (voucher) => {
+      if (!pendingRedemptionWallet) {
+        return;
+      }
+
+      const walletAddress = pendingRedemptionWallet;
+      const provider = customerSigner?.provider;
+      
+      if (!customerSigner) {
+        toast.error('Please connect your wallet first.');
+        setShowVoucherModal(false);
+        setPendingRedemptionWallet(null);
+        return;
+      }
+
+      // Get the actual address from the signer to verify it matches
+      let signerAddress;
+      try {
+        signerAddress = await customerSigner.getAddress();
+        console.log('[Redemption] Signer address:', signerAddress);
+        console.log('[Redemption] Target wallet address:', walletAddress);
+        console.log('[Redemption] Context customerAddress:', customerAddress);
+        console.log('[Redemption] Is owner:', isOwner);
+      } catch (error) {
+        toast.error('Unable to get wallet address. Please reconnect your wallet.');
+        setShowVoucherModal(false);
+        setPendingRedemptionWallet(null);
+        return;
+      }
+
+      // Check if customer is redeeming their own reward
+      const isCustomerRedeeming = signerAddress.toLowerCase() === walletAddress.toLowerCase();
+      console.log('[Redemption] Is customer redeeming own reward:', isCustomerRedeeming);
+      
+      // Determine which signer to use and verify authorization
+      let signerToUse = customerSigner;
+      let authorizationError = null;
+      
+      if (isCustomerRedeeming) {
+        // Customer redeeming their own reward - signer must match customer address
+        if (signerAddress.toLowerCase() !== walletAddress.toLowerCase()) {
+          authorizationError = `Wallet mismatch. Connected: ${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}, but trying to redeem for: ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}. Please connect the correct wallet.`;
+        }
+      } else {
+        // Owner redeeming for customer - signer must be the owner
+        if (!isOwner) {
+          authorizationError = `Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) is not the contract owner. Only the contract owner can redeem rewards for other customers.`;
+        }
+      }
+
+      if (authorizationError) {
+        toast.error(authorizationError);
+        setShowVoucherModal(false);
+        setPendingRedemptionWallet(null);
+        return;
+      }
+
+      try {
+        if (!isCorrectNetwork) {
+          await ensureCorrectNetwork();
+        }
+
+        // CRITICAL: Double-check on-chain pending rewards right before redemption
+        // This prevents the transaction from failing due to database/blockchain sync issues
+        const finalOnChainCheck = await getPendingRewards(walletAddress, provider);
+        console.log('[Redemption] Final on-chain pending rewards check:', finalOnChainCheck.toString());
+        
+        if (finalOnChainCheck === 0n) {
+          // Database shows pending rewards but on-chain doesn't - sync issue
+          toast.error(
+            `Database shows pending rewards, but on-chain shows 0. The database is out of sync. Please refresh the customer list. If the issue persists, the reward may have already been redeemed.`,
+            { autoClose: 10000 }
+          );
+          setShowVoucherModal(false);
+          setPendingRedemptionWallet(null);
+          
+          // Try to sync the database by fetching current on-chain state
+          try {
+            const [onChainStampCount, onChainPendingRewards] = await Promise.all([
+              getStampCount(walletAddress, provider),
+              getPendingRewards(walletAddress, provider),
+            ]);
+            
+            // Update database to match on-chain state
+            await fetch('/api/stamps', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                address: walletAddress,
+                stampCount: Number(onChainStampCount),
+                pendingRewards: Number(onChainPendingRewards),
+              }),
+            }).catch((error) => {
+              console.error('Failed to sync database with on-chain state:', error);
+            });
+            
+            // Refresh customer list to show updated state
+            await fetchCustomers();
+            if (typeof onRefreshRequested === 'function') {
+              onRefreshRequested();
+            }
+          } catch (syncError) {
+            console.error('Error syncing database:', syncError);
+          }
+          
+          return;
+        }
 
         setRedeemingWallet(walletAddress);
+        setShowVoucherModal(false);
         
         // Attempt redemption
-        const { hash, receipt } = await redeemRewardOnChain(walletAddress, customerSigner);
+        const { hash, receipt } = await redeemRewardOnChain(walletAddress, signerToUse);
         toast.success(
           `Reward redeemed for ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)} — tx ${hash.slice(0, 10)}…`
         );
         
         // Fetch on-chain values after redemption to sync with database
+        const rewardTokenAmount = await getRewardTokenAmount(provider);
         try {
           const [onChainStampCount, onChainPendingRewards] = await Promise.all([
             getStampCount(walletAddress, provider),
@@ -222,6 +358,16 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
           });
         }
         
+        // Add voucher to POS checkout
+        if (typeof onVoucherSelected === 'function') {
+          onVoucherSelected({
+            ...voucher,
+            price: 0, // Voucher items are free
+            quantity: 1,
+            isVoucher: true,
+          });
+        }
+        
         // Refresh customer list
         await fetchCustomers();
         if (typeof onRefreshRequested === 'function') {
@@ -248,9 +394,91 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
         if (errorMessage.includes('No rewards pending') || errorMessage.includes('No rewards')) {
           errorMessage = 'No pending rewards found on-chain for this customer. The database may be out of sync.';
         } else if (errorMessage.includes('Insufficient reward pool') || errorMessage.includes('Insufficient')) {
-          errorMessage = 'Insufficient reward pool balance. Please fund the reward pool first using the "Fund Pool" button.';
-        } else if (errorMessage.includes('not authorised') || errorMessage.includes('not the owner')) {
-          errorMessage = 'Connected wallet is not the contract owner. Only the owner can redeem rewards.';
+          // For voucher redemptions, the contract tries to transfer BWT tokens if rewardTokenAmount > 0.
+          // If the pool is empty, the contract reverts. Since vouchers are free drinks (not BWT transfers),
+          // we'll record the redemption in the database manually and proceed with the voucher.
+          console.warn('On-chain redemption failed due to empty reward pool. Recording voucher redemption in database instead.');
+          
+          try {
+            // Get current on-chain state before manual update
+            const [currentStampCount, currentPendingRewards] = await Promise.all([
+              getStampCount(walletAddress, provider),
+              getPendingRewards(walletAddress, provider),
+            ]);
+            
+            // Manually record the voucher redemption in database
+            // Decrement pending rewards by 1, reset stamp count to 0 (as contract would do)
+            const newPendingRewards = Math.max(0, Number(currentPendingRewards) - 1);
+            
+            await fetch('/api/stamps', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                address: walletAddress,
+                txHash: null, // No on-chain transaction
+                blockNumber: null,
+                rewardAmountBWT: 0, // Vouchers don't transfer BWT
+                stampCount: 0, // Contract resets to 0 on redemption
+                pendingRewards: newPendingRewards,
+              }),
+            });
+            
+            // Add voucher to POS checkout
+            if (typeof onVoucherSelected === 'function') {
+              onVoucherSelected({
+                ...voucher,
+                price: 0, // Voucher items are free
+                quantity: 1,
+                isVoucher: true,
+              });
+            }
+            
+            // Refresh customer list
+            await fetchCustomers();
+            if (typeof onRefreshRequested === 'function') {
+              onRefreshRequested();
+            }
+            
+            toast.success(
+              `Voucher redeemed successfully! The reward pool was empty, so this was recorded as a free drink voucher (no BWT transfer). The voucher has been added to your POS checkout.`
+            );
+            
+            // Clear redemption state
+            setRedeemingWallet('');
+            setPendingRedemptionWallet(null);
+            return; // Exit early since we handled it manually
+          } catch (dbError) {
+            console.error('Failed to record voucher redemption in database:', dbError);
+            errorMessage = 'On-chain redemption failed due to empty reward pool, and database update also failed. Please try again or fund the reward pool.';
+          }
+        } else if (errorMessage.includes('not authorised') || errorMessage.includes('not the owner') || errorMessage.includes('Only owner or customer')) {
+          // Get signer address for error message
+          let currentSignerAddr = 'unknown';
+          try {
+            const currentSigner = await signerToUse.getAddress();
+            currentSignerAddr = currentSigner;
+          } catch (e) {
+            // Fallback to stored signerAddress if available
+            if (signerAddress) {
+              currentSignerAddr = signerAddress;
+            }
+          }
+          const targetAddr = walletAddress;
+          const ownerAddr = merchantAddress || 'unknown';
+          
+          // Show detailed error with all addresses
+          console.error('[Redemption Error] Address mismatch:', {
+            signerAddress: currentSignerAddr,
+            targetCustomer: targetAddr,
+            contractOwner: ownerAddr,
+            isCustomerRedeeming,
+            isOwner,
+          });
+          
+          errorMessage = `Authorization failed! Connected wallet (${currentSignerAddr.slice(0, 6)}…${currentSignerAddr.slice(-4)}) must be either the customer (${targetAddr.slice(0, 6)}…${targetAddr.slice(-4)}) or the contract owner (${ownerAddr !== 'unknown' ? `${ownerAddr.slice(0, 6)}…${ownerAddr.slice(-4)}` : 'unknown'}). Check console for details.`;
         } else if (errorMessage.includes('execution reverted')) {
           errorMessage = 'Transaction reverted. Check that the customer has pending rewards and the reward pool is funded.';
         }
@@ -258,16 +486,20 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
         toast.error(errorMessage);
       } finally {
         setRedeemingWallet('');
+        setPendingRedemptionWallet(null);
       }
     },
     [
       accessToken,
+      customerAddress,
       customerSigner,
       ensureCorrectNetwork,
       fetchCustomers,
       isCorrectNetwork,
       isOwner,
       onRefreshRequested,
+      onVoucherSelected,
+      pendingRedemptionWallet,
     ]
   );
 
@@ -425,17 +657,18 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                           !rewardEligible ||
                           isConnecting ||
                           redeemingWallet === wallet ||
-                          !accessToken ||
-                          !isOwner
+                          !accessToken
                         }
-                        onClick={() => handleRedeem(wallet)}
+                        onClick={() => handleRedeemClick(wallet)}
                         className="rounded-full border border-emerald-400/40 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                         title={
-                          !isOwner
-                            ? 'Connect the contract owner wallet to redeem rewards'
-                            : pending <= 0
+                          pending <= 0
                             ? 'No pending rewards'
-                            : 'Redeem reward for this customer'
+                            : customerAddress && customerAddress.toLowerCase() === wallet.toLowerCase()
+                            ? 'Redeem your own reward'
+                            : isOwner
+                            ? 'Redeem reward for this customer'
+                            : 'Only the contract owner or the customer themselves can redeem rewards'
                         }
                       >
                         {redeemingWallet === wallet ? 'Redeeming…' : 'Redeem Reward'}
@@ -448,6 +681,15 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
           </table>
         </div>
       )}
+
+      <VoucherSelectionModal
+        isOpen={showVoucherModal}
+        onClose={() => {
+          setShowVoucherModal(false);
+          setPendingRedemptionWallet(null);
+        }}
+        onSelect={handleVoucherSelected}
+      />
     </section>
   );
 }

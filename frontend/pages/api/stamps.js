@@ -19,8 +19,15 @@ export default async function handler(req, res) {
       metadata,
     } = req.body || {};
 
-    if (!address || !txHash) {
-      return res.status(400).json({ error: 'address and txHash are required' });
+    if (!address) {
+      return res.status(400).json({ error: 'address is required' });
+    }
+    
+    // For voucher orders, txHash can be null (no blockchain transaction)
+    // For regular purchases, txHash is required
+    const isVoucherOrder = metadata?.isVoucherOrder || status === 'VOUCHER_REDEEMED';
+    if (!isVoucherOrder && !txHash) {
+      return res.status(400).json({ error: 'txHash is required for regular purchases' });
     }
 
     try {

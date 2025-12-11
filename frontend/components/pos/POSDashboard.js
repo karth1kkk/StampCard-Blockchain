@@ -89,6 +89,10 @@ export default function POSDashboard({ session, onSignOut, onSessionExpired }) {
   const [merchantDisplayName, setMerchantDisplayName] = useState('');
   const [coffeeMenu, setCoffeeMenu] = useState([]);
   const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [contractBalance, setContractBalance] = useState(null);
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+  const [operatorBalance, setOperatorBalance] = useState(null);
+  const [isLoadingOperatorBalance, setIsLoadingOperatorBalance] = useState(false);
 
   const handleConnectMerchant = useCallback(async () => {
     try {
@@ -177,9 +181,76 @@ const merchantContractAddress = useMemo(() => {
   }
 }, []);
 
+  // Fetch contract BWT balance
+  useEffect(() => {
+    const fetchContractBalance = async () => {
+      if (!merchantContractAddress || !provider) {
+        setContractBalance(null);
+        return;
+      }
+
+      try {
+        setIsLoadingBalance(true);
+        const balance = await getTokenBalance(merchantContractAddress, provider);
+        setContractBalance(balance);
+      } catch (error) {
+        console.error('Failed to fetch contract balance:', error);
+        setContractBalance(null);
+      } finally {
+        setIsLoadingBalance(false);
+      }
+    };
+
+    fetchContractBalance();
+    
+    // Refresh balance every 10 seconds
+    const interval = setInterval(fetchContractBalance, 10000);
+    return () => clearInterval(interval);
+  }, [merchantContractAddress, provider]);
+
+  // Fetch operator wallet BWT balance
+  useEffect(() => {
+    const fetchOperatorBalance = async () => {
+      if (!customerAddress || !provider) {
+        setOperatorBalance(null);
+        return;
+      }
+
+      try {
+        setIsLoadingOperatorBalance(true);
+        const balance = await getTokenBalance(customerAddress, provider);
+        setOperatorBalance(balance);
+      } catch (error) {
+        console.error('Failed to fetch operator balance:', error);
+        setOperatorBalance(null);
+      } finally {
+        setIsLoadingOperatorBalance(false);
+      }
+    };
+
+    fetchOperatorBalance();
+    
+    // Refresh balance every 10 seconds
+    const interval = setInterval(fetchOperatorBalance, 10000);
+    return () => clearInterval(interval);
+  }, [customerAddress, provider]);
+
   const orderItems = useMemo(() => {
     return Object.entries(quantities)
       .map(([productId, quantity]) => {
+        // Check if this is a voucher item
+        if (productId.startsWith('voucher-')) {
+          const voucherType = productId.replace('voucher-', '');
+          const voucherName = voucherType === 'flat-white' ? 'Flat White' : voucherType === 'cappuccino' ? 'Cappuccino' : 'Free Drink';
+          return {
+            id: productId,
+            name: voucherName,
+            price: 0, // Vouchers are always free
+            quantity,
+            isVoucher: true,
+          };
+        }
+        
         const product = coffeeMenu.find((item) => item.id === productId);
         if (!product || quantity <= 0) {
           return null;
@@ -189,14 +260,19 @@ const merchantContractAddress = useMemo(() => {
           name: product.name,
           price: product.price,
           quantity,
+          isVoucher: false,
         };
       })
       .filter(Boolean);
-  }, [quantities]);
+  }, [quantities, coffeeMenu]);
 
   const orderSummary = useMemo(() => {
+    // Only calculate total for non-voucher items (vouchers are free)
     const totalWei = orderItems.reduce((acc, item) => {
-      const priceWei = ethers.parseUnits(item.price, 18);
+      if (item.isVoucher) {
+        return acc; // Vouchers don't contribute to total
+      }
+      const priceWei = ethers.parseUnits(item.price.toString(), 18);
       return acc + priceWei * BigInt(item.quantity);
     }, 0n);
     const totalBwt = ethers.formatUnits(totalWei, 18);
@@ -217,6 +293,12 @@ const merchantContractAddress = useMemo(() => {
   }, []);
 
   const updateQuantity = useCallback((productId, delta) => {
+    // Prevent quantity changes for voucher items (they're always quantity 1)
+    if (productId.startsWith('voucher-')) {
+      toast.info('Voucher items cannot be modified. Only one voucher drink is allowed per redemption.');
+      return;
+    }
+    
     setQuantities((prev) => {
       const nextQuantity = Math.max((prev[productId] || 0) + delta, 0);
       if (nextQuantity === 0) {
@@ -248,10 +330,23 @@ const merchantContractAddress = useMemo(() => {
     sanitizedCustomerWallet &&
     ethers.isAddress(sanitizedCustomerWallet);
 
+  // Check if order has any items (including vouchers)
+  const hasOrderItems = orderItems.length > 0;
+  
+  // Check if order has only vouchers (no paid items)
+  const hasOnlyVouchers = hasOrderItems && orderItems.every(item => item.isVoucher);
+  
+  // Check if order has paid items
+  const hasPaidItems = orderItems.some(item => !item.isVoucher);
+  
   const canPayWithWallet =
+    hasPaidItems &&
     orderSummary.totalWei > 0n &&
     customerAddress &&
     ethers.isAddress(customerAddress);
+  
+  // Allow proceeding with voucher-only orders (no payment needed)
+  const canProceedWithVoucher = hasOnlyVouchers && sanitizedCustomerWallet && ethers.isAddress(sanitizedCustomerWallet);
 
   const extractRpcError = useCallback((error) => {
     if (!error) {
@@ -293,8 +388,82 @@ const merchantContractAddress = useMemo(() => {
   );
 
   const handlePayWithWallet = useCallback(async () => {
+    // Check if this is a voucher-only order (no payment needed)
+    const isVoucherOnlyOrder = orderItems.length > 0 && orderItems.every(item => item.isVoucher);
+    
+    if (isVoucherOnlyOrder) {
+      // Handle voucher-only order (no blockchain transaction needed)
+      if (!sanitizedCustomerWallet || !ethers.isAddress(sanitizedCustomerWallet)) {
+        toast.error('Please enter a valid customer wallet address.');
+        return;
+      }
+      
+      try {
+        setIsPaying(true);
+        const customerWalletToUse = sanitizedCustomerWallet;
+        
+        // Record voucher-only order directly to database (no blockchain transaction)
+        const syncResponse = await fetch('/api/stamps', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token || ''}`,
+          },
+          body: JSON.stringify({
+            address: customerWalletToUse,
+            email: customerEmail.trim() || null,
+            totalBWT: 0, // Voucher orders are free
+            items: orderItems,
+            txHash: null, // No blockchain transaction
+            blockNumber: null,
+            rewardThreshold: STAMPS_PER_REWARD,
+            stampsAwarded: 0, // No stamps for voucher redemption
+            merchantEmail: session?.user?.email || null,
+            status: 'VOUCHER_REDEEMED',
+            metadata: { 
+              source: 'pos-dashboard', 
+              paymentMethod: 'voucher-only',
+              isVoucherOrder: true,
+            },
+          }),
+        });
+
+        if (!syncResponse.ok) {
+          const errorData = await syncResponse.json().catch(() => ({}));
+          throw new Error(errorData?.error || 'Failed to record voucher order');
+        }
+
+        // Show receipt
+        setReceiptData({
+          items: orderItems,
+          totalBWT: 0,
+          customerWallet: customerWalletToUse,
+          customerEmail: customerEmail.trim() || null,
+          merchantEmail: session?.user?.email || null,
+          txHash: null,
+          blockNumber: null,
+          timestamp: new Date().toISOString(),
+          paymentMethod: 'voucher-only',
+          stampsAwarded: 0,
+          stampCount: 0,
+          pendingRewards: 0,
+        });
+        setIsReceiptVisible(true);
+
+        toast.success('Voucher order processed successfully.');
+        resetOrder();
+      } catch (error) {
+        console.error('Voucher order processing failed:', error);
+        toast.error(error?.message || 'Failed to process voucher order.');
+      } finally {
+        setIsPaying(false);
+      }
+      return;
+    }
+    
+    // Regular payment flow for paid items
     if (!canPayWithWallet) {
-      toast.error('Select at least one item and connect your wallet to pay.');
+      toast.error('Select at least one paid item and connect your wallet to pay.');
       return;
     }
     if (!customerAddress || !customerSigner) {
@@ -657,6 +826,7 @@ const merchantContractAddress = useMemo(() => {
     }
   }, [
     canPayWithWallet,
+    canProceedWithVoucher,
     customerAddress,
     customerSigner,
     isCorrectNetwork,
@@ -670,6 +840,7 @@ const merchantContractAddress = useMemo(() => {
     orderItems,
     resetOrder,
     provider,
+    sanitizedCustomerWallet,
   ]);
 
   const handleGenerateQr = useCallback(() => {
@@ -1035,8 +1206,12 @@ const merchantContractAddress = useMemo(() => {
       toast.error('Connect the wallet first.');
       return;
     }
+    if (!isOwner) {
+      toast.error('Only the contract owner can fund the reward pool.');
+      return;
+    }
     setIsFundPoolModalOpen(true);
-  }, [customerSigner]);
+  }, [customerSigner, isOwner]);
 
   const headerTime = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
@@ -1047,7 +1222,7 @@ const merchantContractAddress = useMemo(() => {
           <p className="text-[10px] uppercase tracking-[0.45em] text-white/40">BrewToken POS</p>
           <h1 className="mt-3 text-2xl font-semibold text-white">Coffee Bar</h1>
           <p className="mt-2 text-xs text-slate-300">
-            Process BrewToken orders, accept mobile payments, and issue loyalty stamps from one screen.
+            Process BrewToken orders, accept payments, and issue loyalty stamps from one screen.
           </p>
         </div>
 
@@ -1062,11 +1237,27 @@ const merchantContractAddress = useMemo(() => {
             </p> */}
           </div>
           <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Connected wallet</p>
+            <p className="text-[10px] uppercase tracking-[0.35em] text-white/50">Loyalty contract</p>
             {merchantContractAddress ? (
-              <p className="font-mono text-xs text-emerald-200">
-                {shortenAddress(merchantContractAddress)}
-              </p>
+              <>
+                <p className="font-mono text-xs text-emerald-200">
+                  {shortenAddress(merchantContractAddress)}
+                </p>
+                <div className="mt-2 space-y-1">
+                  {isLoadingBalance ? (
+                    <p className="text-[10px] text-slate-400">Loading balance…</p>
+                  ) : contractBalance !== null ? (
+                    <p className="text-xs text-emerald-300 font-semibold">
+                      Balance: {formatCurrency(ethers.formatUnits(contractBalance, 18))} {BREW_TOKEN_SYMBOL}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-slate-400">Unable to fetch balance</p>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  This is the CoffeeLoyalty contract address where reward pool funds are stored
+                </p>
+              </>
             ) : (
               <p className="text-xs text-red-200">Contract address not configured.</p>
             )}
@@ -1076,6 +1267,17 @@ const merchantContractAddress = useMemo(() => {
             {customerAddress ? (
               <>
                 <p className="font-mono text-xs text-slate-100">{shortenAddress(customerAddress)}</p>
+                <div className="mt-2 space-y-1">
+                  {isLoadingOperatorBalance ? (
+                    <p className="text-[10px] text-slate-400">Loading balance…</p>
+                  ) : operatorBalance !== null ? (
+                    <p className="text-xs text-emerald-300 font-semibold">
+                      Balance: {formatCurrency(ethers.formatUnits(operatorBalance, 18))} {BREW_TOKEN_SYMBOL}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-slate-400">Unable to fetch balance</p>
+                  )}
+                </div>
                 <p className="text-[10px] uppercase tracking-[0.4em] text-emerald-200/80">
                   {isOwner ? 'Owner verified' : 'Not contract owner'}
                 </p>
@@ -1100,23 +1302,21 @@ const merchantContractAddress = useMemo(() => {
                 )}
               </div>
             )}
-            <button
-              type="button"
-              onClick={handleConnectMerchant}
-              disabled={isConnecting}
-              className="mt-3 w-full rounded-full border border-emerald-300/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isConnecting
-                ? 'Connecting…'
-                : customerAddress
-                ? 'Refresh Wallet'
-                : 'Connect Wallet'}
-            </button>
+            {!customerAddress && (
+              <button
+                type="button"
+                onClick={handleConnectMerchant}
+                disabled={isConnecting}
+                className="mt-3 w-full rounded-full border border-emerald-300/40 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isConnecting ? 'Connecting…' : 'Connect Wallet'}
+              </button>
+            )}
             {customerAddress ? (
               <button
                 type="button"
                 onClick={handleDisconnectMerchant}
-                className="mt-2 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
               >
                 Disconnect
               </button>
@@ -1178,14 +1378,16 @@ const merchantContractAddress = useMemo(() => {
             >
               Orders
             </button>
-            <button
-              type="button"
-              onClick={handleFundRewards}
-              disabled={isConnecting || isFunding}
-              className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isFunding ? 'Funding…' : 'Fund Pool'}
-            </button>
+            {isOwner && (
+              <button
+                type="button"
+                onClick={handleFundRewards}
+                disabled={isConnecting || isFunding}
+                className="rounded-full border border-emerald-400/30 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-200 transition hover:border-emerald-200 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isFunding ? 'Funding…' : 'Fund Pool'}
+              </button>
+            )}
             {/* <button
               type="button"
               onClick={() => {
@@ -1305,30 +1507,47 @@ const merchantContractAddress = useMemo(() => {
                   {orderItems.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-slate-200"
+                      className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-sm ${
+                        item.isVoucher
+                          ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
+                          : 'border-white/10 bg-black/40 text-slate-200'
+                      }`}
                     >
                       <div>
-                        <p className="font-semibold text-white">{item.name}</p>
-                        <p className="text-xs text-slate-400">
-                          {item.price} {BREW_TOKEN_SYMBOL} · Qty {item.quantity}
+                        <p className="font-semibold text-white">
+                          {item.name}
+                          {item.isVoucher && (
+                            <span className="ml-2 text-xs text-emerald-300">(Free Voucher)</span>
+                          )}
+                        </p>
+                        <p className={`text-xs ${item.isVoucher ? 'text-emerald-200/80' : 'text-slate-400'}`}>
+                          {item.isVoucher ? 'FREE' : `${item.price} ${BREW_TOKEN_SYMBOL}`} · Qty {item.quantity}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
-                          onClick={() => updateQuantity(item.id, -1)}
-                        >
-                          −
-                        </button>
-                        <span className="text-lg font-semibold text-white">{item.quantity}</span>
-                        <button
-                          type="button"
-                          className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
-                          onClick={() => updateQuantity(item.id, 1)}
-                        >
-                          +
-                        </button>
+                        {item.isVoucher ? (
+                          // Vouchers are fixed at quantity 1, no adjustment allowed
+                          <span className="text-lg font-semibold text-emerald-200">Qty: 1</span>
+                        ) : (
+                          // Regular items can have quantity adjusted
+                          <>
+                            <button
+                              type="button"
+                              className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                              onClick={() => updateQuantity(item.id, -1)}
+                            >
+                              −
+                            </button>
+                            <span className="text-lg font-semibold text-white">{item.quantity}</span>
+                            <button
+                              type="button"
+                              className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                              onClick={() => updateQuantity(item.id, 1)}
+                            >
+                              +
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1379,26 +1598,37 @@ const merchantContractAddress = useMemo(() => {
                 <span>Total ({BREW_TOKEN_SYMBOL})</span>
                 <span className="text-3xl font-semibold text-white">{orderSummary.displayTotal}</span>
               </div>
-              {canPayWithWallet && (
+              {(canPayWithWallet || canProceedWithVoucher) && (
                 <button
                   type="button"
                   onClick={handlePayWithWallet}
                   disabled={isPaying || processingStamp || isConnecting || isWatchingPayment}
-                  className="w-full rounded-full bg-gradient-to-r from-emerald-400 via-lime-300 to-sky-300 px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-900 shadow-lg shadow-emerald-300/40 transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                  className={`w-full rounded-full px-6 py-3 text-xs font-semibold uppercase tracking-[0.3em] shadow-lg transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60 ${
+                    canProceedWithVoucher
+                      ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-emerald-500/40'
+                      : 'bg-gradient-to-r from-emerald-400 via-lime-300 to-sky-300 text-slate-900 shadow-emerald-300/40'
+                  }`}
                 >
                   {isPaying
-                    ? 'Processing Payment…'
+                    ? 'Processing…'
                     : processingStamp
                     ? 'Recording Stamp…'
+                    : canProceedWithVoucher
+                    ? 'Complete Voucher Order'
                     : 'Pay with Connected Wallet'}
                 </button>
               )}
-              {!canPayWithWallet && orderSummary.totalWei > 0n && (
+              {!canPayWithWallet && !canProceedWithVoucher && hasPaidItems && (
                 <p className="text-center text-xs text-slate-400 py-2">
                   Connect wallet to pay directly
                 </p>
               )}
-              {canCreateQr && (
+              {!canProceedWithVoucher && hasOnlyVouchers && (
+                <p className="text-center text-xs text-slate-400 py-2">
+                  Enter customer wallet address to complete voucher order
+                </p>
+              )}
+              {/* {canCreateQr && (
                 <button
                   type="button"
                   onClick={handleGenerateQr}
@@ -1416,7 +1646,7 @@ const merchantContractAddress = useMemo(() => {
                 <p className="text-center text-xs text-slate-400 py-2">
                   Enter customer wallet address to generate QR
                 </p>
-              )}
+              )} */}
               <div className="grid grid-cols-1">
                 <button
                   type="button"
@@ -1506,6 +1736,16 @@ const merchantContractAddress = useMemo(() => {
                   accessToken={session?.access_token}
                   refreshToken={orderHistoryRefreshToken}
                   onRefreshRequested={() => setOrderHistoryRefreshToken((token) => token + 1)}
+                  onVoucherSelected={(voucher) => {
+                    // Add voucher to checkout with $0 price
+                    // Use a special ID to identify voucher items
+                    const voucherId = `voucher-${voucher.id}`;
+                    setQuantities((prev) => ({
+                      ...prev,
+                      [voucherId]: 1,
+                    }));
+                    toast.success(`Added ${voucher.name} (Free) to your order!`);
+                  }}
                 />
               )}
             </motion.div>
@@ -1530,7 +1770,27 @@ const merchantContractAddress = useMemo(() => {
       />
       <FundPoolModal
         isOpen={isFundPoolModalOpen}
-        onClose={() => setIsFundPoolModalOpen(false)}
+        onClose={async () => {
+          setIsFundPoolModalOpen(false);
+          // Refresh balances after closing (in case funds were transferred)
+          if (merchantContractAddress && provider) {
+            try {
+              const balance = await getTokenBalance(merchantContractAddress, provider);
+              setContractBalance(balance);
+            } catch (error) {
+              console.error('Failed to refresh contract balance:', error);
+            }
+          }
+          // Refresh operator wallet balance
+          if (customerAddress && provider) {
+            try {
+              const balance = await getTokenBalance(customerAddress, provider);
+              setOperatorBalance(balance);
+            } catch (error) {
+              console.error('Failed to refresh operator balance:', error);
+            }
+          }
+        }}
         signer={customerSigner}
         provider={provider}
         customerAddress="0xE4e68F1fEB1Bd1B3035E1cEC0cFE0C657D2f4fF9"
