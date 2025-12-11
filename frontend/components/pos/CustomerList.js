@@ -110,10 +110,10 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
       // Check if customer is redeeming their own reward
       const isCustomerRedeeming = normalizedSigner === normalizedTarget;
       
-      // Verify authorization: must be either the customer themselves OR the owner
-      if (!isCustomerRedeeming && !isOwner) {
+      // Verify authorization: ONLY the customer themselves can redeem their own rewards
+      if (!isCustomerRedeeming) {
         toast.error(
-          `Authorization failed. Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) is not the customer (${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}) and is not the contract owner. Only the customer or contract owner can redeem rewards.`
+          `You can only redeem your own rewards. Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) does not match the customer address (${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}). Please connect the correct wallet to redeem your reward.`
         );
         return;
       }
@@ -224,28 +224,18 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
       const isCustomerRedeeming = signerAddress.toLowerCase() === walletAddress.toLowerCase();
       console.log('[Redemption] Is customer redeeming own reward:', isCustomerRedeeming);
       
-      // Determine which signer to use and verify authorization
-      let signerToUse = customerSigner;
-      let authorizationError = null;
-      
-      if (isCustomerRedeeming) {
-        // Customer redeeming their own reward - signer must match customer address
-        if (signerAddress.toLowerCase() !== walletAddress.toLowerCase()) {
-          authorizationError = `Wallet mismatch. Connected: ${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}, but trying to redeem for: ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}. Please connect the correct wallet.`;
-        }
-      } else {
-        // Owner redeeming for customer - signer must be the owner
-        if (!isOwner) {
-          authorizationError = `Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) is not the contract owner. Only the contract owner can redeem rewards for other customers.`;
-        }
-      }
-
-      if (authorizationError) {
-        toast.error(authorizationError);
+      // ONLY customers can redeem their own rewards - no owner redemption allowed
+      if (!isCustomerRedeeming) {
+        toast.error(
+          `You can only redeem your own rewards. Connected wallet (${signerAddress.slice(0, 6)}…${signerAddress.slice(-4)}) does not match the customer address (${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}). Please connect the correct wallet to redeem your reward.`
+        );
         setShowVoucherModal(false);
         setPendingRedemptionWallet(null);
         return;
       }
+      
+      // Customer is redeeming their own reward - use their signer
+      const signerToUse = customerSigner;
 
       try {
         if (!isCorrectNetwork) {
@@ -467,18 +457,15 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
             }
           }
           const targetAddr = walletAddress;
-          const ownerAddr = merchantAddress || 'unknown';
           
           // Show detailed error with all addresses
           console.error('[Redemption Error] Address mismatch:', {
             signerAddress: currentSignerAddr,
             targetCustomer: targetAddr,
-            contractOwner: ownerAddr,
             isCustomerRedeeming,
-            isOwner,
           });
           
-          errorMessage = `Authorization failed! Connected wallet (${currentSignerAddr.slice(0, 6)}…${currentSignerAddr.slice(-4)}) must be either the customer (${targetAddr.slice(0, 6)}…${targetAddr.slice(-4)}) or the contract owner (${ownerAddr !== 'unknown' ? `${ownerAddr.slice(0, 6)}…${ownerAddr.slice(-4)}` : 'unknown'}). Check console for details.`;
+          errorMessage = `Authorization failed! Only customers can redeem their own rewards. Connected wallet (${currentSignerAddr.slice(0, 6)}…${currentSignerAddr.slice(-4)}) must match the customer address (${targetAddr.slice(0, 6)}…${targetAddr.slice(-4)}). Please connect the correct wallet to redeem your reward.`;
         } else if (errorMessage.includes('execution reverted')) {
           errorMessage = 'Transaction reverted. Check that the customer has pending rewards and the reward pool is funded.';
         }
@@ -512,55 +499,27 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
           <p className="mt-1 text-sm text-slate-300">
             Track stamp progress, pending rewards, and lifetime BrewToken orders.
           </p>
-          {!isOwner && (
-            <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3">
-              <p className="text-xs font-semibold text-amber-200 mb-2">
-                ⚠️ Owner Wallet Required
+          <div className="mt-3 rounded-xl border border-blue-400/30 bg-blue-400/10 p-3">
+            <p className="text-xs font-semibold text-blue-200 mb-2">
+              ℹ️ Customer Redemption Only
+            </p>
+            <p className="text-xs text-blue-100/90 mb-2">
+              Only customers can redeem their own rewards. Connect the customer's wallet to redeem their reward.
+            </p>
+            {!customerAddress && (
+              <p className="text-xs text-blue-100/80 mt-2">
+                <span className="font-semibold">Status:</span> No wallet connected. Connect a customer wallet to redeem their reward.
               </p>
-              <p className="text-xs text-amber-100/90 mb-2">
-                To redeem rewards, you must connect the wallet that owns the CoffeeLoyalty contract.
-              </p>
-              {merchantAddress && (
-                <div className="mt-2 space-y-1">
-                  <p className="text-xs text-amber-200/80">
-                    <span className="font-semibold">Contract Owner:</span>{' '}
-                    <span className="font-mono">{merchantAddress.slice(0, 10)}…{merchantAddress.slice(-8)}</span>
-                  </p>
-                  {customerAddress && (
-                    <p className="text-xs text-amber-200/80">
-                      <span className="font-semibold">Connected Wallet:</span>{' '}
-                      <span className="font-mono">{customerAddress.slice(0, 10)}…{customerAddress.slice(-8)}</span>
-                    </p>
-                  )}
-                  {!customerAddress && (
-                    <p className="text-xs text-amber-200/80">
-                      <span className="font-semibold">Status:</span> No wallet connected
-                    </p>
-                  )}
-                </div>
-              )}
-              {!merchantAddress && (
-                <p className="text-xs text-amber-100/80">
-                  Unable to fetch contract owner address. Make sure the contract is deployed and the RPC is connected.
-                </p>
-              )}
-              <p className="text-xs text-amber-100/80 mt-2">
-                <span className="font-semibold">How to fix:</span> Import the deployer wallet (the one that deployed the contract) into MetaMask and connect it. 
-                This is typically the first account from Hardhat (check your deployment output for the deployer address).
-              </p>
-            </div>
-          )}
-          {isOwner && customerAddress && merchantAddress && (
-            <div className="mt-3 rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-3">
-              <p className="text-xs font-semibold text-emerald-200">
-                ✅ Owner Wallet Connected
-              </p>
-              <p className="text-xs text-emerald-100/90 mt-1">
-                You can redeem rewards for customers. Connected as:{' '}
+            )}
+            {customerAddress && (
+              <p className="text-xs text-blue-100/80 mt-2">
+                <span className="font-semibold">Connected Wallet:</span>{' '}
                 <span className="font-mono">{customerAddress.slice(0, 10)}…{customerAddress.slice(-8)}</span>
+                <br />
+                <span className="text-[10px]">You can only redeem rewards for this wallet address.</span>
               </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -650,29 +609,31 @@ export default function CustomerList({ accessToken, onRefreshRequested, refreshT
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400">{lastUpdated}</td>
                     <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        disabled={
-                          pending <= 0 ||
-                          !rewardEligible ||
-                          isConnecting ||
-                          redeemingWallet === wallet ||
-                          !accessToken
-                        }
-                        onClick={() => handleRedeemClick(wallet)}
-                        className="rounded-full border border-emerald-400/40 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                        title={
-                          pending <= 0
-                            ? 'No pending rewards'
-                            : customerAddress && customerAddress.toLowerCase() === wallet.toLowerCase()
-                            ? 'Redeem your own reward'
-                            : isOwner
-                            ? 'Redeem reward for this customer'
-                            : 'Only the contract owner or the customer themselves can redeem rewards'
-                        }
-                      >
-                        {redeemingWallet === wallet ? 'Redeeming…' : 'Redeem Reward'}
-                      </button>
+                      {(() => {
+                        // Only show redeem button if the connected wallet matches the customer's wallet
+                        const canRedeem = customerAddress && customerAddress.toLowerCase() === wallet.toLowerCase();
+                        const isDisabled = pending <= 0 || !rewardEligible || isConnecting || redeemingWallet === wallet || !accessToken || !canRedeem;
+                        
+                        return (
+                          <button
+                            type="button"
+                            disabled={isDisabled}
+                            onClick={() => handleRedeemClick(wallet)}
+                            className="rounded-full border border-emerald-400/40 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                            title={
+                              !canRedeem
+                                ? 'Only the customer themselves can redeem their own rewards. Connect the customer wallet to redeem.'
+                                : pending <= 0
+                                ? 'No pending rewards'
+                                : !customerAddress
+                                ? 'Connect your wallet to redeem your reward'
+                                : 'Redeem your own reward'
+                            }
+                          >
+                            {redeemingWallet === wallet ? 'Redeeming…' : 'Redeem Reward'}
+                          </button>
+                        );
+                      })()}
                     </td>
                   </tr>
                   );

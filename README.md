@@ -21,7 +21,8 @@ BrewToken replaces traditional paper stamp cards with a blockchain-based loyalty
 
 - **Token-based payments** – customers pay for coffee with BrewToken (BWT)
 - **Automatic stamp accrual** – each purchase adds a stamp directly on-chain via smart contract
-- **Owner-controlled rewards** – only the contract owner can redeem free drinks
+- **Customer self-redemption** – only customers can redeem their own rewards (not the contract owner)
+- **Voucher system** – rewards are redeemed as free drink vouchers (Flat White or Cappuccino)
 - **Real-time analytics** – Supabase stores aggregated purchase/reward data for dashboards
 - **Mobile-friendly** – optimized for MetaMask Mobile QR code scanning
 
@@ -32,16 +33,20 @@ BrewToken replaces traditional paper stamp cards with a blockchain-based loyalty
 2. Selects a coffee and pays with BrewToken via wallet or QR code
 3. CoffeeLoyalty contract automatically adds 1 stamp after payment
 4. After 8 stamps, customer earns a free drink (pending reward)
-5. Merchant redeems the reward on-chain
+5. Customer redeems their own reward and selects a voucher (Flat White or Cappuccino)
+6. Voucher is automatically added to POS checkout as a free item
+7. Customer can add other items and pay only for those (voucher item is free)
 
 **Merchant Flow:**
 1. Merchant logs in via Supabase Auth at `/pos`
-2. Enters customer wallet address and selects coffee items
-3. Generates QR code or accepts wallet payment
-4. Payment triggers automatic stamp recording on-chain
-5. System syncs purchase data to Supabase
-6. Merchant can redeem rewards for eligible customers
-7. Merchant can fund the reward pool when needed
+2. Connects operator wallet (contract owner) for administrative functions
+3. Enters customer wallet address and selects coffee items
+4. Generates QR code or accepts wallet payment
+5. Payment triggers automatic stamp recording on-chain
+6. System syncs purchase data to Supabase
+7. Merchant can view customer stamp cards and pending rewards
+8. Merchant can fund the reward pool (contract or custom addresses)
+9. Merchant processes voucher orders (free drinks from redeemed rewards)
 
 ## 🧱 System Architecture
 
@@ -51,7 +56,7 @@ BrewToken replaces traditional paper stamp cards with a blockchain-based loyalty
 - **`CoffeeLoyalty.sol`** – Main loyalty contract that handles:
   - `buyCoffee(customer, amount)` – processes payment and automatically adds 1 stamp
   - `recordStamp(customer)` – manually record a stamp (owner only)
-  - `redeemReward(customer)` – redeem a free drink (owner only)
+  - `redeemReward(customer)` – redeem a free drink (customer or owner can call, but only for customer's own rewards)
   - `fundRewards(amount)` – fund the reward pool (owner only)
 
 Key Events:
@@ -82,11 +87,13 @@ Key Events:
 
 **Main Components:**
 - **Customer Dashboard** (`CustomerDashboard.js`) – Customer-facing interface with wallet connection, coffee menu, purchase button, stamp progress, and recent activity
-- **POS Dashboard** (`POSDashboard.js`) – Merchant point-of-sale interface with order management, customer wallet input, payment processing, QR generation, and customer list
-- **Customer List** (`CustomerList.js`) – Displays all customers with stamp cards, pending rewards, and redemption controls
+- **POS Dashboard** (`POSDashboard.js`) – Merchant point-of-sale interface with order management, customer wallet input, payment processing, QR generation, customer list, and BWT balance displays
+- **Customer List** (`CustomerList.js`) – Displays all customers with stamp cards, pending rewards, and redemption controls (customer-only redemption)
+- **Voucher Selection Modal** (`VoucherSelectionModal.js`) – Allows customers to select their free drink (Flat White or Cappuccino) when redeeming rewards
 - **Purchase History** (`PurchaseHistory.js`) – Transaction history viewer
-- **Receipt Modal** (`ReceiptModal.js`) – Displays transaction receipts
+- **Receipt Modal** (`ReceiptModal.js`) – Displays transaction receipts with voucher items shown as $0
 - **Stamp Card** (`StampCard.js`) – Visual stamp card component showing progress
+- **Fund Pool Modal** (`FundPoolModal.js`) – Transfer BWT tokens to contract or custom addresses
 
 **Pages:**
 - `/` – POS login page
@@ -194,17 +201,20 @@ SUPABASE_SERVICE_ROLE_KEY=...            # Required for listing merchant profile
 
 ### Merchant / POS Journey
 1. Visit `/` or `/pos` and sign in with Supabase Auth (or register at `/merchant/register`)
-2. Connect the contract owner wallet (for reward redemption)
+2. Connect the contract owner wallet (for administrative functions like funding pool)
 3. Enter customer wallet address manually or scan QR code
 4. Select coffee items and quantities
 5. Choose payment method:
    - **Pay with Connected Wallet** – customer pays directly from connected wallet
-   - **Generate Payment QR** – creates QR code for customer to scan with MetaMask Mobile
+   - **Complete Voucher Order** – for voucher-only orders (no payment needed)
 6. After payment, stamp is automatically recorded on-chain
 7. Purchase is synced to Supabase database
 8. If customer reaches 8/8 stamps, a notification toast appears
-9. Merchant can redeem rewards from the Customer List
-10. Merchant can fund the reward pool using the Fund Pool button
+9. Customers can redeem their own rewards (merchant cannot redeem for them)
+10. When customer redeems, they select a voucher (Flat White or Cappuccino)
+11. Voucher is automatically added to POS checkout as a free item
+12. Merchant can fund the reward pool (contract or custom addresses) using the Fund Pool button
+13. View BWT balances for both the loyalty contract and operator wallet in the sidebar
 
 ### Features
 - **Automatic Stamp Recording** – Stamps are added on-chain after each purchase
@@ -212,6 +222,13 @@ SUPABASE_SERVICE_ROLE_KEY=...            # Required for listing merchant profile
 - **Payment Processing Loader** – Full-screen loader during payment processing
 - **Full Stamp Card Notification** – Toast notification when customer reaches 8/8 stamps with clickable link to view stamp card
 - **Product Management** – Coffee menu stored in Supabase database (can be updated via SQL)
+- **Customer Self-Redemption** – Only customers can redeem their own rewards (not the contract owner)
+- **Voucher System** – Rewards are redeemed as free drink vouchers (Flat White or Cappuccino)
+- **Voucher-Only Orders** – Process $0 orders for redeemed vouchers without blockchain transactions
+- **BWT Balance Display** – Real-time BWT balance display for loyalty contract and operator wallet
+- **Flexible Fund Pool** – Transfer BWT to contract address or any custom wallet address
+- **Voucher Protection** – Voucher items cannot have quantity changed (fixed at 1 per redemption)
+- **Receipt Integration** – Receipts show voucher items as $0/FREE with clear labeling
 
 ## 🧪 Testing & Verification
 
@@ -227,7 +244,10 @@ SUPABASE_SERVICE_ROLE_KEY=...            # Required for listing merchant profile
 | `Internal JSON-RPC error` on purchase | Insufficient BWT balance or wrong approval | Transfer BWT to customer and approve spending |
 | Customer data missing | Supabase not configured | Add Supabase env vars and restart frontend |
 | Stamp count not updating | Database sync issue | Check API logs and verify on-chain state |
-| Merchant can't redeem | Not connected as owner | Connect the wallet that deployed the contract |
+| Can't redeem reward | Wallet mismatch | Only customers can redeem their own rewards - connect the customer's wallet |
+| Reward pool empty error | Contract needs BWT | Use Fund Pool button to transfer BWT to contract address |
+| Voucher order fails | Missing address/txHash | Voucher orders don't require txHash - ensure address is provided |
+| Balance not showing | Provider not connected | Ensure wallet is connected and provider is available |
 
 ## 🗂 Project Structure
 
@@ -259,7 +279,8 @@ StampCard-Blockchain/
 │   │       ├── StampCard.js             # Stamp card UI
 │   │       ├── QRModal.js               # QR code modal
 │   │       ├── ReceiptModal.js          # Receipt display
-│   │       └── FundPoolModal.js         # Fund reward pool
+│   │       ├── FundPoolModal.js         # Fund reward pool (contract or custom)
+│   │       └── VoucherSelectionModal.js # Voucher selection (Flat White/Cappuccino)
 │   ├── pages/
 │   │   ├── _app.js                      # App wrapper
 │   │   ├── index.js                     # POS home/login
